@@ -1,0 +1,14 @@
+{
+  "name": "lithos-terminal",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace=web",
+    "build": "npm run build --workspace=web",
+    "db:seed": "npm run seed --workspace=@lithos/db"
+  }
+}
