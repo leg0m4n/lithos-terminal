@@ -3,6 +3,8 @@ import { FilterProvider } from "@/lib/filter-context";
 import { FilterSidebar } from "@/components/sidebar/filter-sidebar";
 import { getOriginOptions } from "@/lib/market-data";
 
+export const dynamic = "force-dynamic";
+
 export default async function DashboardLayout({ children }: { children: ReactNode }) {
   const originOptions = await getOriginOptions();
 

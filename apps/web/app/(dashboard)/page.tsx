@@ -4,6 +4,11 @@ import { HeroScatterChart } from "@/components/charts/hero-scatter-chart";
 import { GemstoneGrid } from "@/components/dashboard/gemstone-grid";
 import { getMarketData } from "@/lib/market-data";
 
+// Without this, Next prerenders "/" once at build time and every visitor
+// gets that frozen snapshot until the next deploy — not what "Live ·
+// Supabase" is supposed to mean.
+export const dynamic = "force-dynamic";
+
 const GRID_SIZE = 50;
 
 export default async function DashboardPage() {
