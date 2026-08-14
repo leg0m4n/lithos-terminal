@@ -22,25 +22,16 @@ import {
   type TreatmentStatus,
 } from "@/lib/filter-context";
 
-// Mirrors packages/db/src/seed.ts ORIGINS. Swap for a live
-// `SELECT DISTINCT origin FROM gemstones` once the chart is wired to data.
-const ORIGIN_OPTIONS = [
-  "Cambodia (Ratanakiri)",
-  "Sri Lanka",
-  "Myanmar (Mogok)",
-  "Tanzania",
-  "Vietnam",
-  "Madagascar",
-  "Nigeria",
-  "Australia",
-];
-
 const TREATMENT_OPTIONS: { value: TreatmentStatus; label: string }[] = [
   { value: "unheated", label: "Unheated" },
   { value: "heated_thermal", label: "Heated (Thermal)" },
 ];
 
-export function FilterSidebar() {
+interface FilterSidebarProps {
+  originOptions: string[];
+}
+
+export function FilterSidebar({ originOptions }: FilterSidebarProps) {
   const {
     treatmentStatuses,
     origin,
@@ -74,7 +65,7 @@ export function FilterSidebar() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Origins</SelectItem>
-            {ORIGIN_OPTIONS.map((name) => (
+            {originOptions.map((name) => (
               <SelectItem key={name} value={name} className="text-base">
                 {name}
               </SelectItem>
