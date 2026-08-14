@@ -3,7 +3,9 @@ export function Logo() {
     <div className="flex items-center gap-3">
       <svg
         viewBox="0 0 30 40"
-        className="h-[30px] w-[22.5px] shrink-0 text-primary"
+        // ~25% above the "Lithos" L cap-height (~22px) for a bit more
+        // presence as a badge.
+        className="h-[27.72px] w-[20.79px] shrink-0 text-primary"
         aria-hidden="true"
       >
         {/* octagon cut — elongated to match the letter's cap-height */}
@@ -15,11 +17,11 @@ export function Logo() {
         />
         <text
           x="15"
-          y="21"
+          y="20"
           textAnchor="middle"
           dominantBaseline="central"
           fill="currentColor"
-          fontSize="56"
+          fontSize="26"
           style={{ fontFamily: "var(--font-gothic)" }}
         >
           L
@@ -29,7 +31,7 @@ export function Logo() {
         <span className="font-gothic text-3xl leading-none text-foreground">
           Lithos
         </span>
-        <span className="text-xl leading-none font-medium tracking-wide text-muted-foreground">
+        <span className="relative -top-[2px] text-xl leading-none font-medium tracking-wide text-muted-foreground">
           Terminal
         </span>
       </div>
