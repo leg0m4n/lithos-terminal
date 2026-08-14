@@ -19,13 +19,13 @@ export function Logo() {
           textAnchor="middle"
           dominantBaseline="central"
           fill="currentColor"
-          fontSize="32"
+          fontSize="56"
           style={{ fontFamily: "var(--font-gothic)" }}
         >
           L
         </text>
       </svg>
-      <div className="flex items-end gap-2">
+      <div className="flex items-baseline gap-2">
         <span className="font-gothic text-3xl leading-none text-foreground">
           Lithos
         </span>
