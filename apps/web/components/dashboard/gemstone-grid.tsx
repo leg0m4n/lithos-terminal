@@ -33,13 +33,14 @@ interface GemstoneGridProps {
 }
 
 export function GemstoneGrid({ sales }: GemstoneGridProps) {
-  const { stoneType, treatmentStatuses, origin, caratRange } = useFilters();
+  const { stoneType, origin, caratRange, priceRange, certifiedOnly } = useFilters();
 
   // `sales` arrives sorted by auction_starts descending from the server
   // query, so slicing after filtering keeps "most recent" semantics.
   const listings = useMemo(
-    () => filterSales(sales, { stoneType, treatmentStatuses, origin, caratRange }).slice(0, GRID_SIZE),
-    [sales, stoneType, treatmentStatuses, origin, caratRange]
+    () =>
+      filterSales(sales, { stoneType, origin, caratRange, priceRange, certifiedOnly }).slice(0, GRID_SIZE),
+    [sales, stoneType, origin, caratRange, priceRange, certifiedOnly]
   );
 
   return (

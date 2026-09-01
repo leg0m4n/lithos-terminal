@@ -14,14 +14,11 @@ export const CARAT_MIN = 0;
 export const CARAT_MAX = 16;
 
 // Matches the bracket boundaries from the spec: <1ct, 1-2.99ct, 3-4.99ct,
-// 5-9.99ct, 10ct+. The range slider snaps its thumbs to these stops.
+// 5-9.99ct, 10ct+. These are NOT evenly spaced on a linear 0-16 scale (1, 3,
+// 5, 10 bunch toward the low end) — the slider must snap to bracket INDEX,
+// not to raw carat value, or the thumb's real position drifts away from
+// where its label sits and drag-snapping feels arbitrary.
 export const CARAT_BRACKET_STOPS = [0, 1, 3, 5, 10, 16] as const;
-
-export function snapToBracket(value: number): number {
-  return CARAT_BRACKET_STOPS.reduce((closest, stop) =>
-    Math.abs(stop - value) < Math.abs(closest - value) ? stop : closest
-  );
-}
 
 export function describeCaratRange(min: number, max: number): string {
   const atMax = max >= CARAT_MAX;
@@ -30,24 +27,48 @@ export function describeCaratRange(min: number, max: number): string {
   return `${min.toFixed(1)} – ${max.toFixed(1)}ct`;
 }
 
+export const PRICE_MIN = 0;
+export const PRICE_MAX = 20_000;
+
+// Sold prices are heavily right-skewed (p25 ~$3, median ~$12, p90 ~$86, p99
+// ~$517) — a linear slider would waste 95% of its travel on the bottom 1% of
+// the range. Brackets follow the real distribution instead of round numbers.
+export const PRICE_BRACKET_STOPS = [0, 10, 25, 75, 250, 1000, PRICE_MAX] as const;
+
+const priceFormatter = new Intl.NumberFormat("en-US", {
+  style: "currency",
+  currency: "USD",
+  maximumFractionDigits: 0,
+});
+
+export function describePriceRange(min: number, max: number): string {
+  const atMax = max >= PRICE_MAX;
+  if (min <= PRICE_MIN && atMax) return "All Prices";
+  if (atMax) return `${priceFormatter.format(min)}+`;
+  return `${priceFormatter.format(min)} – ${priceFormatter.format(max)}`;
+}
+
 interface FilterState {
   stoneType: string; // "all" | specific stone_type value
-  treatmentStatuses: Set<TreatmentStatus>;
   origin: string; // "all" | specific origin name
   caratRange: [number, number];
+  priceRange: [number, number];
+  certifiedOnly: boolean;
 }
 
 interface FilterContextValue extends FilterState {
   setStoneType: (stoneType: string) => void;
-  toggleTreatmentStatus: (status: TreatmentStatus) => void;
   setOrigin: (origin: string) => void;
   setCaratRange: (range: [number, number]) => void;
+  setPriceRange: (range: [number, number]) => void;
+  setCertifiedOnly: (value: boolean) => void;
   resetFilters: () => void;
 }
 
-const DEFAULT_TREATMENTS: TreatmentStatus[] = ["unheated", "heated_thermal"];
 const DEFAULT_ORIGIN = "all";
 const DEFAULT_CARAT_RANGE: [number, number] = [CARAT_MIN, CARAT_MAX];
+const DEFAULT_PRICE_RANGE: [number, number] = [PRICE_MIN, PRICE_MAX];
+const DEFAULT_CERTIFIED_ONLY = false;
 
 const FilterContext = createContext<FilterContextValue | null>(null);
 
@@ -61,42 +82,35 @@ interface FilterProviderProps {
 
 export function FilterProvider({ children, defaultStoneType = "all" }: FilterProviderProps) {
   const [stoneType, setStoneType] = useState(defaultStoneType);
-  const [treatmentStatuses, setTreatmentStatuses] = useState<Set<TreatmentStatus>>(
-    () => new Set(DEFAULT_TREATMENTS)
-  );
   const [origin, setOrigin] = useState(DEFAULT_ORIGIN);
   const [caratRange, setCaratRange] = useState<[number, number]>(DEFAULT_CARAT_RANGE);
-
-  const toggleTreatmentStatus = (status: TreatmentStatus) => {
-    setTreatmentStatuses((prev) => {
-      const next = new Set(prev);
-      if (next.has(status)) next.delete(status);
-      else next.add(status);
-      return next;
-    });
-  };
+  const [priceRange, setPriceRange] = useState<[number, number]>(DEFAULT_PRICE_RANGE);
+  const [certifiedOnly, setCertifiedOnly] = useState(DEFAULT_CERTIFIED_ONLY);
 
   const resetFilters = () => {
     // Deliberately leaves stoneType alone — "Reset" clears the filter
     // panel's own controls, not the left-nav category you're browsing.
-    setTreatmentStatuses(new Set(DEFAULT_TREATMENTS));
     setOrigin(DEFAULT_ORIGIN);
     setCaratRange(DEFAULT_CARAT_RANGE);
+    setPriceRange(DEFAULT_PRICE_RANGE);
+    setCertifiedOnly(DEFAULT_CERTIFIED_ONLY);
   };
 
   const value = useMemo<FilterContextValue>(
     () => ({
       stoneType,
-      treatmentStatuses,
       origin,
       caratRange,
+      priceRange,
+      certifiedOnly,
       setStoneType,
-      toggleTreatmentStatus,
       setOrigin,
       setCaratRange,
+      setPriceRange,
+      setCertifiedOnly,
       resetFilters,
     }),
-    [stoneType, treatmentStatuses, origin, caratRange]
+    [stoneType, origin, caratRange, priceRange, certifiedOnly]
   );
 
   return (

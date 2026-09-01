@@ -156,37 +156,27 @@ export const getMarketData = cache(async (): Promise<{ sales: GemstoneSale[] }> 
   return { sales };
 });
 
-const ORIGIN_OPTIONS_SAMPLE_SIZE = 2000;
-
-// Live replacement for the static ORIGIN_OPTIONS list the sidebar used to
-// ship with — sorted by how common each origin actually is in the data.
-export const getOriginOptions = cache(async (): Promise<string[]> => {
-  const rows = await fetchAllPages<{ origin: string }>(
-    (from, to) =>
-      supabase
-        .from("gemstone_sales")
-        .select("origin")
-        .eq("sale_status", "Sold")
-        .not("origin", "is", null)
-        .neq("origin", "")
-        .order("auction_starts", { ascending: false, nullsFirst: false })
-        .range(from, to),
-    ORIGIN_OPTIONS_SAMPLE_SIZE
-  );
-
+// Origins are scoped to the currently-selected stone type (a Sapphire buyer
+// shouldn't see Tanzanite-only origins in the dropdown) — derived client-side
+// from the already-loaded `sales` set rather than a separate server query,
+// so it can react to stoneType changes with no extra round trip. Sorted by
+// how common each origin is within that type.
+export function originOptionsForType(sales: GemstoneSale[], stoneType: string): string[] {
   const counts = new Map<string, number>();
-  for (const row of rows) {
-    counts.set(row.origin, (counts.get(row.origin) ?? 0) + 1);
+  for (const s of sales) {
+    if (stoneType !== "all" && s.stoneType !== stoneType) continue;
+    if (!s.origin) continue;
+    counts.set(s.origin, (counts.get(s.origin) ?? 0) + 1);
   }
-
   return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([origin]) => origin);
-});
+}
 
 export interface SaleFilters {
   stoneType: string;
-  treatmentStatuses: Set<TreatmentStatus>;
   origin: string;
   caratRange: [number, number];
+  priceRange: [number, number];
+  certifiedOnly: boolean;
 }
 
 // Shared by the chart and the grid so "switch stone type" filters both
@@ -194,11 +184,10 @@ export interface SaleFilters {
 export function filterSales(sales: GemstoneSale[], filters: SaleFilters): GemstoneSale[] {
   return sales.filter((s) => {
     if (filters.stoneType !== "all" && s.stoneType !== filters.stoneType) return false;
-    // Unrecognized/unreported treatment status passes through rather than
-    // being hidden — most of the feed doesn't report it at all.
-    if (s.treatmentStatus && !filters.treatmentStatuses.has(s.treatmentStatus)) return false;
     if (filters.origin !== "all" && s.origin !== filters.origin) return false;
     if (s.weightCarats < filters.caratRange[0] || s.weightCarats > filters.caratRange[1]) return false;
+    if (s.priceUsd < filters.priceRange[0] || s.priceUsd > filters.priceRange[1]) return false;
+    if (filters.certifiedOnly && !s.isCertified) return false;
     return true;
   });
 }

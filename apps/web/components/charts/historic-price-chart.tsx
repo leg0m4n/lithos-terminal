@@ -72,15 +72,15 @@ interface HistoricPriceChartProps {
 }
 
 export function HistoricPriceChart({ sales }: HistoricPriceChartProps) {
-  const { stoneType, treatmentStatuses, origin, caratRange } = useFilters();
+  const { stoneType, origin, caratRange, priceRange, certifiedOnly } = useFilters();
   const [scaleType, setScaleType] = useState<ScaleType>("linear");
 
   const filtered = useMemo(() => {
-    return filterSales(sales, { stoneType, treatmentStatuses, origin, caratRange }).filter(
+    return filterSales(sales, { stoneType, origin, caratRange, priceRange, certifiedOnly }).filter(
       // Can't place a point on a time axis without a timestamp.
       (s) => s.auctionStartsAt !== null
     );
-  }, [sales, stoneType, treatmentStatuses, origin, caratRange]);
+  }, [sales, stoneType, origin, caratRange, priceRange, certifiedOnly]);
 
   const option = useMemo(() => {
     const scatterData: ScatterPointDatum[] = filtered.map((s) => ({

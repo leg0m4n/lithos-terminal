@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useMemo } from "react";
+import { BadgeCheck } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import {
@@ -15,35 +17,46 @@ import { Button } from "@/components/ui/button";
 import { Logo } from "@/components/sidebar/logo";
 import { StoneTypeNav } from "@/components/sidebar/stone-type-nav";
 import {
-  CARAT_MAX,
-  CARAT_MIN,
+  CARAT_BRACKET_STOPS,
   describeCaratRange,
-  snapToBracket,
+  describePriceRange,
+  PRICE_BRACKET_STOPS,
   useFilters,
-  type TreatmentStatus,
 } from "@/lib/filter-context";
-import type { StoneTypeOption } from "@/lib/market-data";
-
-const TREATMENT_OPTIONS: { value: TreatmentStatus; label: string }[] = [
-  { value: "unheated", label: "Unheated" },
-  { value: "heated_thermal", label: "Heated (Thermal)" },
-];
+import { originOptionsForType, type GemstoneSale, type StoneTypeOption } from "@/lib/market-data";
 
 interface FilterSidebarProps {
-  originOptions: string[];
+  sales: GemstoneSale[];
   stoneTypeOptions: StoneTypeOption[];
 }
 
-export function FilterSidebar({ originOptions, stoneTypeOptions }: FilterSidebarProps) {
+export function FilterSidebar({ sales, stoneTypeOptions }: FilterSidebarProps) {
   const {
-    treatmentStatuses,
+    stoneType,
     origin,
     caratRange,
-    toggleTreatmentStatus,
+    priceRange,
+    certifiedOnly,
     setOrigin,
     setCaratRange,
+    setPriceRange,
+    setCertifiedOnly,
     resetFilters,
   } = useFilters();
+
+  const originOptions = useMemo(
+    () => originOptionsForType(sales, stoneType),
+    [sales, stoneType]
+  );
+
+  // A previously-picked origin can go stale the moment the stone type
+  // changes (e.g. "Tanzania" selected under Tanzanite, then switching to
+  // Sapphire) — silently filtering everything out otherwise.
+  useEffect(() => {
+    if (origin !== "all" && !originOptions.includes(origin)) {
+      setOrigin("all");
+    }
+  }, [origin, originOptions, setOrigin]);
 
   return (
     <aside className="flex h-full w-80 shrink-0 flex-col gap-7 overflow-y-auto border-r border-sidebar-border bg-sidebar px-6 py-7 text-sidebar-foreground">
@@ -83,23 +96,17 @@ export function FilterSidebar({ originOptions, stoneTypeOptions }: FilterSidebar
 
       <Separator className="bg-sidebar-border" />
 
-      <div className="flex flex-col gap-3.5">
-        <Label className="text-sm text-muted-foreground">Treatment Status</Label>
-        <div className="flex flex-col gap-3">
-          {TREATMENT_OPTIONS.map(({ value, label }) => (
-            <div key={value} className="flex items-center gap-3">
-              <Checkbox
-                id={`treatment-${value}`}
-                checked={treatmentStatuses.has(value)}
-                onCheckedChange={() => toggleTreatmentStatus(value)}
-                className="size-4.5"
-              />
-              <Label htmlFor={`treatment-${value}`} className="text-base font-normal">
-                {label}
-              </Label>
-            </div>
-          ))}
-        </div>
+      <div className="flex items-center gap-3">
+        <Checkbox
+          id="certified-only"
+          checked={certifiedOnly}
+          onCheckedChange={(checked) => setCertifiedOnly(checked === true)}
+          className="size-4.5"
+        />
+        <Label htmlFor="certified-only" className="flex items-center gap-1.5 text-base font-normal">
+          <BadgeCheck className="size-4 text-primary" />
+          Certified Only
+        </Label>
       </div>
 
       <Separator className="bg-sidebar-border" />
@@ -111,26 +118,76 @@ export function FilterSidebar({ originOptions, stoneTypeOptions }: FilterSidebar
             {describeCaratRange(caratRange[0], caratRange[1])}
           </span>
         </div>
-        <Slider
-          min={CARAT_MIN}
-          max={CARAT_MAX}
-          step={0.1}
+        <BracketRangeSlider
+          stops={CARAT_BRACKET_STOPS}
           value={caratRange}
-          onValueChange={(vals) => {
-            const [a, b] = vals as [number, number];
-            setCaratRange([snapToBracket(a), snapToBracket(b)]);
-          }}
-          className="py-1.5"
+          onValueChange={setCaratRange}
+          formatStop={(v, isLast) => (isLast ? `${v}+` : `${v}`)}
         />
-        <div className="flex justify-between text-xs text-muted-foreground">
-          <span>0</span>
-          <span>1</span>
-          <span>3</span>
-          <span>5</span>
-          <span>10</span>
-          <span>16+</span>
+      </div>
+
+      <Separator className="bg-sidebar-border" />
+
+      <div className="flex flex-col gap-3.5">
+        <div className="flex items-center justify-between">
+          <Label className="text-sm text-muted-foreground">Price</Label>
+          <span className="text-sm font-medium text-foreground">
+            {describePriceRange(priceRange[0], priceRange[1])}
+          </span>
         </div>
+        <BracketRangeSlider
+          stops={PRICE_BRACKET_STOPS}
+          value={priceRange}
+          onValueChange={setPriceRange}
+          formatStop={(v, isLast) => (isLast ? `$${v / 1000}k+` : `$${v}`)}
+        />
       </div>
     </aside>
   );
 }
+
+// Bracket edges (carat, price) aren't evenly spaced in real units — they
+// follow the actual data distribution (magic-size steps, price percentiles),
+// not round numbers. Driving the slider off raw values on a linear scale
+// made the thumb's true position drift away from its label and made drag
+// snapping look arbitrary. Operating on the stop's INDEX instead keeps every
+// stop an equal-width tick, exactly matching the evenly-spaced labels below.
+function BracketRangeSlider({
+  stops,
+  value,
+  onValueChange,
+  formatStop,
+}: {
+  stops: readonly number[];
+  value: [number, number];
+  onValueChange: (value: [number, number]) => void;
+  formatStop: (stop: number, isLast: boolean) => string;
+}) {
+  const indexOfStop = (v: number) => {
+    const idx = stops.indexOf(v);
+    return idx === -1 ? 0 : idx;
+  };
+  const indices: [number, number] = [indexOfStop(value[0]), indexOfStop(value[1])];
+
+  return (
+    <>
+      <Slider
+        min={0}
+        max={stops.length - 1}
+        step={1}
+        value={indices}
+        onValueChange={(vals) => {
+          const [a, b] = vals as [number, number];
+          onValueChange([stops[a], stops[b]]);
+        }}
+        className="py-1.5"
+      />
+      <div className="flex justify-between text-xs text-muted-foreground">
+        {stops.map((stop, i) => (
+          <span key={stop}>{formatStop(stop, i === stops.length - 1)}</span>
+        ))}
+      </div>
+    </>
+  );
+}
+
