@@ -107,29 +107,51 @@ function toGemstoneSale(row: GemstoneSaleRow): GemstoneSale | null {
   };
 }
 
+// Supabase's hosted API gateway caps every response at 1000 rows (the
+// project's "Max Rows" setting) regardless of an explicit .limit() —
+// it truncates silently (HTTP 206) rather than erroring, so a plain
+// .limit(5000) call was quietly capped at 1000 the whole time. Page
+// through in 1000-row windows with .range() to actually reach the count
+// we ask for.
+const SUPABASE_PAGE_SIZE = 1000;
+
+async function fetchAllPages<T>(
+  page: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
+  maxRows: number
+): Promise<T[]> {
+  const rows: T[] = [];
+  for (let from = 0; from < maxRows; from += SUPABASE_PAGE_SIZE) {
+    const to = Math.min(from + SUPABASE_PAGE_SIZE, maxRows) - 1;
+    const { data, error } = await page(from, to);
+    if (error) throw new Error(error.message);
+    const batch = data ?? [];
+    rows.push(...batch);
+    if (batch.length < to - from + 1) break; // fewer than requested = exhausted
+  }
+  return rows;
+}
+
 const MARKET_DATA_LIMIT = 5000;
 
 // Cached per request so every server component on the page (chart, grid)
 // reads the same fetched set instead of re-querying Supabase.
 export const getMarketData = cache(async (): Promise<{ sales: GemstoneSale[] }> => {
-  const { data, error } = await supabase
-    .from("gemstone_sales")
-    .select(SELECT_COLUMNS)
-    // dredge-history's write gate already excludes reserve_not_met rows, so
-    // no need to re-filter for that here — see HANDOFF_LITHOS_TERMINAL.md.
-    .eq("sale_status", "Sold")
-    .not("sold_price_usd", "is", null)
-    .not("weight_carats", "is", null)
-    .order("auction_starts", { ascending: false, nullsFirst: false })
-    .limit(MARKET_DATA_LIMIT);
+  const rows = await fetchAllPages<GemstoneSaleRow>(
+    (from, to) =>
+      supabase
+        .from("gemstone_sales")
+        .select(SELECT_COLUMNS)
+        // dredge-history's write gate already excludes reserve_not_met rows,
+        // so no need to re-filter for that here — see HANDOFF_LITHOS_TERMINAL.md.
+        .eq("sale_status", "Sold")
+        .not("sold_price_usd", "is", null)
+        .not("weight_carats", "is", null)
+        .order("auction_starts", { ascending: false, nullsFirst: false })
+        .range(from, to),
+    MARKET_DATA_LIMIT
+  );
 
-  if (error) {
-    throw new Error(`Failed to fetch gemstone_sales: ${error.message}`);
-  }
-
-  const sales = (data as GemstoneSaleRow[])
-    .map(toGemstoneSale)
-    .filter((sale): sale is GemstoneSale => sale !== null);
+  const sales = rows.map(toGemstoneSale).filter((sale): sale is GemstoneSale => sale !== null);
 
   return { sales };
 });
@@ -139,21 +161,21 @@ const ORIGIN_OPTIONS_SAMPLE_SIZE = 2000;
 // Live replacement for the static ORIGIN_OPTIONS list the sidebar used to
 // ship with — sorted by how common each origin actually is in the data.
 export const getOriginOptions = cache(async (): Promise<string[]> => {
-  const { data, error } = await supabase
-    .from("gemstone_sales")
-    .select("origin")
-    .eq("sale_status", "Sold")
-    .not("origin", "is", null)
-    .neq("origin", "")
-    .order("auction_starts", { ascending: false, nullsFirst: false })
-    .limit(ORIGIN_OPTIONS_SAMPLE_SIZE);
-
-  if (error) {
-    throw new Error(`Failed to fetch origin options: ${error.message}`);
-  }
+  const rows = await fetchAllPages<{ origin: string }>(
+    (from, to) =>
+      supabase
+        .from("gemstone_sales")
+        .select("origin")
+        .eq("sale_status", "Sold")
+        .not("origin", "is", null)
+        .neq("origin", "")
+        .order("auction_starts", { ascending: false, nullsFirst: false })
+        .range(from, to),
+    ORIGIN_OPTIONS_SAMPLE_SIZE
+  );
 
   const counts = new Map<string, number>();
-  for (const row of data as { origin: string }[]) {
+  for (const row of rows) {
     counts.set(row.origin, (counts.get(row.origin) ?? 0) + 1);
   }
 
@@ -189,21 +211,23 @@ export interface StoneTypeOption {
 
 const UNCLASSIFIED_LABEL = "Unclassified";
 
-// Powers the left-nav stone-type switcher. Counts are exact (a plain
-// aggregate query), not sampled — this table is small enough for now that a
-// full scan per stone_type is cheap, unlike the origin sample above.
-export const getStoneTypeOptions = cache(async (): Promise<StoneTypeOption[]> => {
-  const { data, error } = await supabase
-    .from("gemstone_sales")
-    .select("stone_type")
-    .eq("sale_status", "Sold");
+// High enough ceiling that it won't clip real growth for a while (current
+// scale is low thousands); if the sweep ever scans past this, switch to a
+// DB-side aggregate (RPC) instead of paging the raw column client-side.
+const STONE_TYPE_SCAN_LIMIT = 50_000;
 
-  if (error) {
-    throw new Error(`Failed to fetch stone types: ${error.message}`);
-  }
+// Powers the left-nav stone-type switcher. Counts are exact (a full scan,
+// paged past Supabase's 1000-row response cap), not sampled — this is a
+// single skinny column so it's cheap even at tens of thousands of rows.
+export const getStoneTypeOptions = cache(async (): Promise<StoneTypeOption[]> => {
+  const rows = await fetchAllPages<{ stone_type: string | null }>(
+    (from, to) =>
+      supabase.from("gemstone_sales").select("stone_type").eq("sale_status", "Sold").range(from, to),
+    STONE_TYPE_SCAN_LIMIT
+  );
 
   const counts = new Map<string, number>();
-  for (const row of data as { stone_type: string | null }[]) {
+  for (const row of rows) {
     const key = row.stone_type || UNCLASSIFIED_LABEL;
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
