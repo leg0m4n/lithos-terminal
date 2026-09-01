@@ -1,6 +1,6 @@
 import { Badge } from "@/components/ui/badge";
 import { ActiveFiltersBar } from "@/components/dashboard/active-filters-bar";
-import { HeroScatterChart } from "@/components/charts/hero-scatter-chart";
+import { HistoricPriceChart } from "@/components/charts/historic-price-chart";
 import { GemstoneGrid } from "@/components/dashboard/gemstone-grid";
 import { getMarketData } from "@/lib/market-data";
 
@@ -8,8 +8,6 @@ import { getMarketData } from "@/lib/market-data";
 // gets that frozen snapshot until the next deploy — not what "Live ·
 // Supabase" is supposed to mean.
 export const dynamic = "force-dynamic";
-
-const GRID_SIZE = 50;
 
 export default async function DashboardPage() {
   const { sales } = await getMarketData();
@@ -22,16 +20,16 @@ export default async function DashboardPage() {
             Live · Supabase
           </Badge>
           <p className="text-base text-muted-foreground">
-            Zircon market intelligence — sold price vs. carat weight.
+            Gemstone market intelligence — sold price over time, by stone type.
           </p>
         </div>
 
         <ActiveFiltersBar />
       </header>
 
-      <HeroScatterChart sales={sales} />
+      <HistoricPriceChart sales={sales} />
 
-      <GemstoneGrid listings={sales.slice(0, GRID_SIZE)} />
+      <GemstoneGrid sales={sales} />
     </div>
   );
 }

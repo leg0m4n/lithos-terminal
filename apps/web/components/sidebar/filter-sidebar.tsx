@@ -13,6 +13,7 @@ import { Separator } from "@/components/ui/separator";
 import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
 import { Logo } from "@/components/sidebar/logo";
+import { StoneTypeNav } from "@/components/sidebar/stone-type-nav";
 import {
   CARAT_MAX,
   CARAT_MIN,
@@ -21,6 +22,7 @@ import {
   useFilters,
   type TreatmentStatus,
 } from "@/lib/filter-context";
+import type { StoneTypeOption } from "@/lib/market-data";
 
 const TREATMENT_OPTIONS: { value: TreatmentStatus; label: string }[] = [
   { value: "unheated", label: "Unheated" },
@@ -29,9 +31,10 @@ const TREATMENT_OPTIONS: { value: TreatmentStatus; label: string }[] = [
 
 interface FilterSidebarProps {
   originOptions: string[];
+  stoneTypeOptions: StoneTypeOption[];
 }
 
-export function FilterSidebar({ originOptions }: FilterSidebarProps) {
+export function FilterSidebar({ originOptions, stoneTypeOptions }: FilterSidebarProps) {
   const {
     treatmentStatuses,
     origin,
@@ -43,8 +46,12 @@ export function FilterSidebar({ originOptions }: FilterSidebarProps) {
   } = useFilters();
 
   return (
-    <aside className="flex h-full w-80 shrink-0 flex-col gap-7 border-r border-sidebar-border bg-sidebar px-6 py-7 text-sidebar-foreground">
+    <aside className="flex h-full w-80 shrink-0 flex-col gap-7 overflow-y-auto border-r border-sidebar-border bg-sidebar px-6 py-7 text-sidebar-foreground">
       <Logo />
+
+      <Separator className="bg-sidebar-border" />
+
+      <StoneTypeNav options={stoneTypeOptions} />
 
       <Separator className="bg-sidebar-border" />
 

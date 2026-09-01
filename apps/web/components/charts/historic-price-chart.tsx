@@ -6,21 +6,13 @@ import type { EChartsOption } from "echarts";
 import { Card } from "@/components/ui/card";
 import { useFilters } from "@/lib/filter-context";
 import { cn } from "@/lib/utils";
-import type { GemstoneSale, SaleStatus } from "@/lib/market-data";
+import { filterSales, type GemstoneSale } from "@/lib/market-data";
 
 type ScaleType = "linear" | "log";
 
 // echarts-for-react's class typing predates React 19's stricter JSX element
 // checks; the runtime component is unaffected, only the JSX-usability type is.
 const ReactECharts = EChartsReactImport as unknown as ComponentType<EChartsReactProps>;
-
-// Color = sale status. The live feed only ever reports "Active" or "Sold" —
-// gold reads as "still on the market", muted gray as "gone".
-const STATUS_META: Record<SaleStatus, { color: string; label: string }> = {
-  active: { color: "#ddb049", label: "Active" },
-  sold: { color: "#9b9fa3", label: "Sold" },
-  other: { color: "#5b6165", label: "Unknown" },
-};
 
 const THEME = {
   ink: "#f1f2f3",
@@ -30,6 +22,9 @@ const THEME = {
   surfaceRing: "#25282b",
   tooltipBg: "#25282b",
   tooltipBorder: "rgba(255,255,255,0.14)",
+  // Reclaimed from the old "active listing" gold now that every row here is
+  // a confirmed sale — one series, one accent, no legend needed.
+  sold: "#ddb049",
 };
 
 const MIN_CARAT_FOR_SIZE = 1;
@@ -60,56 +55,54 @@ function escapeHtml(value: string): string {
   );
 }
 
+const treatmentLabel: Record<string, string> = {
+  unheated: "Unheated",
+  heated_thermal: "Heated (Thermal)",
+};
+
 interface ScatterPointDatum {
-  value: [number, number]; // [weightCarats, priceUsd]
+  value: [number, number]; // [auctionStartsAtMs, priceUsd]
   symbolSize: number;
   itemStyle: { color: string; borderColor: string; borderWidth: number };
   sale: GemstoneSale;
 }
 
-interface HeroScatterChartProps {
+interface HistoricPriceChartProps {
   sales: GemstoneSale[];
 }
 
-export function HeroScatterChart({ sales }: HeroScatterChartProps) {
-  const { treatmentStatuses, origin, caratRange } = useFilters();
+export function HistoricPriceChart({ sales }: HistoricPriceChartProps) {
+  const { stoneType, treatmentStatuses, origin, caratRange } = useFilters();
   const [scaleType, setScaleType] = useState<ScaleType>("linear");
 
   const filtered = useMemo(() => {
-    return sales.filter((s) => {
-      // Unrecognized/unreported treatment status passes through rather than
-      // being hidden — most of the live feed doesn't report it at all.
-      if (s.treatmentStatus && !treatmentStatuses.has(s.treatmentStatus)) return false;
-      if (origin !== "all" && s.origin !== origin) return false;
-      if (s.weightCarats < caratRange[0] || s.weightCarats > caratRange[1]) return false;
-      return true;
-    });
-  }, [sales, treatmentStatuses, origin, caratRange]);
+    return filterSales(sales, { stoneType, treatmentStatuses, origin, caratRange }).filter(
+      // Can't place a point on a time axis without a timestamp.
+      (s) => s.auctionStartsAt !== null
+    );
+  }, [sales, stoneType, treatmentStatuses, origin, caratRange]);
 
   const option = useMemo(() => {
-    const scatterData: ScatterPointDatum[] = filtered.map((s) => {
-      const meta = STATUS_META[s.saleStatus];
-      return {
-        value: [s.weightCarats, s.priceUsd],
-        symbolSize: symbolSizeForCarat(s.weightCarats),
-        itemStyle: {
-          color: meta.color,
-          borderColor: THEME.surfaceRing,
-          borderWidth: 1.5,
-        },
-        sale: s,
-      };
-    });
+    const scatterData: ScatterPointDatum[] = filtered.map((s) => ({
+      value: [new Date(s.auctionStartsAt!).getTime(), s.priceUsd],
+      symbolSize: symbolSizeForCarat(s.weightCarats),
+      itemStyle: {
+        color: THEME.sold,
+        borderColor: THEME.surfaceRing,
+        borderWidth: 1.5,
+      },
+      sale: s,
+    }));
 
     const built: EChartsOption = {
       backgroundColor: "transparent",
       grid: { left: 72, right: 24, top: 24, bottom: 72 },
       xAxis: {
-        type: "value",
-        name: "Carat Weight",
+        type: "time",
+        name: "Auction Start",
         nameTextStyle: { color: THEME.mutedInk, align: "left" },
         axisLine: { lineStyle: { color: THEME.axisLine } },
-        axisLabel: { color: THEME.mutedInk, formatter: (v: number) => `${v}ct` },
+        axisLabel: { color: THEME.mutedInk },
         splitLine: { show: false },
       },
       yAxis: {
@@ -147,31 +140,34 @@ export function HeroScatterChart({ sales }: HeroScatterChartProps) {
         borderWidth: 1,
         extraCssText: "border-radius: 8px;",
         textStyle: { color: THEME.ink },
-        // Hover-to-reveal image + basic info card, per the requested
-        // interaction: nothing shows until the pointer is over a datapoint.
+        // Hover-to-reveal image + basic info card — nothing shows until the
+        // pointer is over a datapoint.
         formatter: (params) => {
           const { data } = params as unknown as { data: ScatterPointDatum };
           const s = data.sale;
-          const date = s.saleDate
-            ? new Date(s.saleDate).toLocaleDateString("en-US", {
-                year: "numeric",
-                month: "short",
-                day: "numeric",
-              })
-            : "Date unknown";
-          const meta = STATUS_META[s.saleStatus];
+          const date = new Date(s.auctionStartsAt!).toLocaleDateString("en-US", {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+          });
           const imageHtml = s.imageUrl
             ? `<img src="${escapeHtml(s.imageUrl)}" style="width:200px;height:150px;object-fit:cover;border-radius:6px;display:block;margin-bottom:8px" />`
+            : "";
+          const certLine = s.isCertified
+            ? `${s.certificationLab ? escapeHtml(s.certificationLab) : "Certified"}<br/>`
             : "";
           return `<div style="min-width:200px">
             ${imageHtml}
             <div style="font-weight:600;font-size:14px;margin-bottom:2px">${formatCurrency(s.priceUsd)}</div>
-            <div style="color:${THEME.mutedInk};font-size:12px;margin-bottom:8px">${date} · ${meta.label}</div>
+            <div style="color:${THEME.mutedInk};font-size:12px;margin-bottom:8px">Auction started ${date}</div>
             <div style="font-size:12px;line-height:1.6">
-              ${escapeHtml(s.stoneType ?? "Zircon")} · ${s.weightCarats.toFixed(2)}ct<br/>
+              ${escapeHtml(s.stoneType ?? "Unclassified")} · ${s.weightCarats.toFixed(2)}ct<br/>
               ${s.colorCategory ? `${escapeHtml(s.colorCategory)}<br/>` : ""}
+              ${s.shape ? `${escapeHtml(s.shape)}${s.cutStyle ? ` · ${escapeHtml(s.cutStyle)}` : ""}<br/>` : ""}
+              ${s.clarity ? `Clarity: ${escapeHtml(s.clarity)}<br/>` : ""}
               ${s.origin ? `${escapeHtml(s.origin)}<br/>` : ""}
-              ${s.treatmentStatus ? (s.treatmentStatus === "unheated" ? "Unheated" : "Heated (Thermal)") + "<br/>" : ""}
+              ${s.treatmentStatus ? `${treatmentLabel[s.treatmentStatus]}<br/>` : ""}
+              ${certLine}
             </div>
           </div>`;
         },
@@ -186,14 +182,16 @@ export function HeroScatterChart({ sales }: HeroScatterChartProps) {
     <Card className="flex flex-col gap-4 p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <p className="text-lg font-medium text-foreground">Price vs. Carat Weight</p>
+          <p className="text-lg font-medium text-foreground">
+            {stoneType === "all" ? "All Stones" : stoneType} — Historic Price Trend
+          </p>
           <p className="text-sm text-muted-foreground">
             Sold price · {filtered.length.toLocaleString()} listings
           </p>
         </div>
         <ScaleToggle value={scaleType} onChange={setScaleType} />
       </div>
-      <ChartLegend />
+      <ChartCaption />
       <ReactECharts option={option} style={{ height: 460, width: "100%" }} notMerge lazyUpdate />
     </Card>
   );
@@ -222,23 +220,16 @@ function ScaleToggle({ value, onChange }: { value: ScaleType; onChange: (v: Scal
   );
 }
 
-function ChartLegend() {
+function ChartCaption() {
   return (
-    <div className="flex flex-wrap items-center gap-4 border-y border-border/60 py-3">
-      <span className="text-xs font-medium text-muted-foreground">Status</span>
-      {(Object.entries(STATUS_META) as [SaleStatus, (typeof STATUS_META)[SaleStatus]][]).map(
-        ([key, meta]) => (
-          <div key={key} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <span
-              className="inline-block rounded-full"
-              style={{ width: 8, height: 8, backgroundColor: meta.color }}
-            />
-            {meta.label}
-          </div>
-        )
-      )}
-      <span className="text-xs text-muted-foreground">· Marker size = carat weight</span>
-      <span className="text-xs text-muted-foreground">· Hover a point for photo &amp; details</span>
+    <div className="flex flex-wrap items-center gap-4 border-y border-border/60 py-3 text-xs text-muted-foreground">
+      <span>Every point is a confirmed sale (reserve met).</span>
+      <span>· Marker size = carat weight</span>
+      <span>· Hover a point for photo &amp; details</span>
+      <span>
+        · X-axis is auction start date — GemRockAuctions doesn&apos;t expose a
+        confirmed sale timestamp
+      </span>
     </div>
   );
 }

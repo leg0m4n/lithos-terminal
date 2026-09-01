@@ -1,7 +1,10 @@
+"use client";
+
+import { useMemo } from "react";
 import Image from "next/image";
 import { Card } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import type { GemstoneSale } from "@/lib/market-data";
+import { useFilters } from "@/lib/filter-context";
+import { filterSales, type GemstoneSale } from "@/lib/market-data";
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -23,17 +26,28 @@ function sourceDomain(url: string): string {
   }
 }
 
+const GRID_SIZE = 50;
+
 interface GemstoneGridProps {
-  listings: GemstoneSale[];
+  sales: GemstoneSale[];
 }
 
-export function GemstoneGrid({ listings }: GemstoneGridProps) {
+export function GemstoneGrid({ sales }: GemstoneGridProps) {
+  const { stoneType, treatmentStatuses, origin, caratRange } = useFilters();
+
+  // `sales` arrives sorted by auction_starts descending from the server
+  // query, so slicing after filtering keeps "most recent" semantics.
+  const listings = useMemo(
+    () => filterSales(sales, { stoneType, treatmentStatuses, origin, caratRange }).slice(0, GRID_SIZE),
+    [sales, stoneType, treatmentStatuses, origin, caratRange]
+  );
+
   return (
     <Card className="flex flex-col gap-4 p-6">
       <div>
-        <p className="text-lg font-medium text-foreground">Live Listings</p>
+        <p className="text-lg font-medium text-foreground">Sold Listings</p>
         <p className="text-sm text-muted-foreground">
-          {listings.length.toLocaleString()} most recent listing events
+          {listings.length.toLocaleString()} most recent sales
         </p>
       </div>
 
@@ -45,8 +59,7 @@ export function GemstoneGrid({ listings }: GemstoneGridProps) {
               <th className="py-2 pr-3 font-medium">Carat</th>
               <th className="py-2 pr-3 font-medium">Price</th>
               <th className="py-2 pr-3 font-medium">Origin</th>
-              <th className="py-2 pr-3 font-medium">Status</th>
-              <th className="py-2 pr-3 font-medium">Sale Date</th>
+              <th className="py-2 pr-3 font-medium">Auction Start</th>
               <th className="py-2 pr-3 font-medium">Source</th>
             </tr>
           </thead>
@@ -71,7 +84,7 @@ export function GemstoneGrid({ listings }: GemstoneGridProps) {
                     </div>
                     <div className="flex flex-col">
                       <span className="font-medium text-foreground">
-                        {listing.stoneType ?? "Zircon"}
+                        {listing.stoneType ?? "Unclassified"}
                       </span>
                       {listing.colorCategory ? (
                         <span className="text-xs text-muted-foreground">{listing.colorCategory}</span>
@@ -86,17 +99,8 @@ export function GemstoneGrid({ listings }: GemstoneGridProps) {
                   {currencyFormatter.format(listing.priceUsd)}
                 </td>
                 <td className="py-2 pr-3 text-muted-foreground">{listing.origin ?? "—"}</td>
-                <td className="py-2 pr-3">
-                  <Badge variant={listing.saleStatus === "sold" ? "secondary" : "outline"} className="text-xs">
-                    {listing.saleStatus === "active"
-                      ? "Active"
-                      : listing.saleStatus === "sold"
-                        ? "Sold"
-                        : "Unknown"}
-                  </Badge>
-                </td>
                 <td className="py-2 pr-3 text-muted-foreground">
-                  {listing.saleDate ? dateFormatter.format(new Date(listing.saleDate)) : "—"}
+                  {listing.auctionStartsAt ? dateFormatter.format(new Date(listing.auctionStartsAt)) : "—"}
                 </td>
                 <td className="py-2 pr-3">
                   <a

@@ -4,11 +4,14 @@ import { Badge } from "@/components/ui/badge";
 import { describeCaratRange, useFilters } from "@/lib/filter-context";
 
 export function ActiveFiltersBar() {
-  const { treatmentStatuses, origin, caratRange } = useFilters();
+  const { stoneType, treatmentStatuses, origin, caratRange } = useFilters();
 
   return (
     <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
       <span>Active filters:</span>
+      <Badge variant="outline" className="text-sm">
+        {stoneType === "all" ? "All Stones" : stoneType}
+      </Badge>
       <Badge variant="outline" className="text-sm">
         {origin === "all" ? "All Origins" : origin}
       </Badge>

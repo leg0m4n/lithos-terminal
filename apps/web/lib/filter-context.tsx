@@ -31,12 +31,14 @@ export function describeCaratRange(min: number, max: number): string {
 }
 
 interface FilterState {
+  stoneType: string; // "all" | specific stone_type value
   treatmentStatuses: Set<TreatmentStatus>;
   origin: string; // "all" | specific origin name
   caratRange: [number, number];
 }
 
 interface FilterContextValue extends FilterState {
+  setStoneType: (stoneType: string) => void;
   toggleTreatmentStatus: (status: TreatmentStatus) => void;
   setOrigin: (origin: string) => void;
   setCaratRange: (range: [number, number]) => void;
@@ -49,7 +51,16 @@ const DEFAULT_CARAT_RANGE: [number, number] = [CARAT_MIN, CARAT_MAX];
 
 const FilterContext = createContext<FilterContextValue | null>(null);
 
-export function FilterProvider({ children }: { children: ReactNode }) {
+interface FilterProviderProps {
+  children: ReactNode;
+  // The chart mixes carat/price across totally different species if left on
+  // "all", so the page hands in its top-count stone type as the real
+  // default; "all" stays reachable as an explicit choice in the nav.
+  defaultStoneType?: string;
+}
+
+export function FilterProvider({ children, defaultStoneType = "all" }: FilterProviderProps) {
+  const [stoneType, setStoneType] = useState(defaultStoneType);
   const [treatmentStatuses, setTreatmentStatuses] = useState<Set<TreatmentStatus>>(
     () => new Set(DEFAULT_TREATMENTS)
   );
@@ -66,6 +77,8 @@ export function FilterProvider({ children }: { children: ReactNode }) {
   };
 
   const resetFilters = () => {
+    // Deliberately leaves stoneType alone — "Reset" clears the filter
+    // panel's own controls, not the left-nav category you're browsing.
     setTreatmentStatuses(new Set(DEFAULT_TREATMENTS));
     setOrigin(DEFAULT_ORIGIN);
     setCaratRange(DEFAULT_CARAT_RANGE);
@@ -73,15 +86,17 @@ export function FilterProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<FilterContextValue>(
     () => ({
+      stoneType,
       treatmentStatuses,
       origin,
       caratRange,
+      setStoneType,
       toggleTreatmentStatus,
       setOrigin,
       setCaratRange,
       resetFilters,
     }),
-    [treatmentStatuses, origin, caratRange]
+    [stoneType, treatmentStatuses, origin, caratRange]
   );
 
   return (
