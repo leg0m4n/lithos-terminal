@@ -1,6 +1,6 @@
 import { cache } from "react";
 import { supabase } from "@/lib/supabase/client";
-import type { TreatmentStatus } from "@/lib/filter-context";
+import { CARAT_MAX, PRICE_MAX, type TreatmentStatus } from "@/lib/filter-context";
 
 // dredge-history only ever writes sale_status = 'Sold' (reserve_not_met is
 // already filtered out at write time — see HANDOFF_LITHOS_TERMINAL.md). The
@@ -185,8 +185,14 @@ export function filterSales(sales: GemstoneSale[], filters: SaleFilters): Gemsto
   return sales.filter((s) => {
     if (filters.stoneType !== "all" && s.stoneType !== filters.stoneType) return false;
     if (filters.origin !== "all" && s.origin !== filters.origin) return false;
-    if (s.weightCarats < filters.caratRange[0] || s.weightCarats > filters.caratRange[1]) return false;
-    if (s.priceUsd < filters.priceRange[0] || s.priceUsd > filters.priceRange[1]) return false;
+    if (s.weightCarats < filters.caratRange[0]) return false;
+    // The top bracket ("10ct+") is open-ended — describeCaratRange already
+    // displays it that way. A hard `> CARAT_MAX` check here would silently
+    // drop every stone heavier than the constant, contradicting the "+"
+    // the UI shows once the slider's pinned to max.
+    if (filters.caratRange[1] < CARAT_MAX && s.weightCarats > filters.caratRange[1]) return false;
+    if (s.priceUsd < filters.priceRange[0]) return false;
+    if (filters.priceRange[1] < PRICE_MAX && s.priceUsd > filters.priceRange[1]) return false;
     if (filters.certifiedOnly && !s.isCertified) return false;
     return true;
   });
