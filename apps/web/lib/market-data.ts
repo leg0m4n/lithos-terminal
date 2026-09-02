@@ -115,9 +115,12 @@ function toGemstoneSale(row: GemstoneSaleRow): GemstoneSale | null {
 // we ask for.
 const SUPABASE_PAGE_SIZE = 1000;
 
+// No maxRows means "page until the table is exhausted" — the exhausted
+// check below (a page shorter than requested) always terminates the loop,
+// so this can't run away even without a ceiling.
 async function fetchAllPages<T>(
   page: (from: number, to: number) => PromiseLike<{ data: T[] | null; error: { message: string } | null }>,
-  maxRows: number
+  maxRows: number = Infinity
 ): Promise<T[]> {
   const rows: T[] = [];
   for (let from = 0; from < maxRows; from += SUPABASE_PAGE_SIZE) {
@@ -131,24 +134,22 @@ async function fetchAllPages<T>(
   return rows;
 }
 
-const MARKET_DATA_LIMIT = 5000;
-
 // Cached per request so every server component on the page (chart, grid)
-// reads the same fetched set instead of re-querying Supabase.
+// reads the same fetched set instead of re-querying Supabase. Fetches the
+// full sold history, uncapped — this is a historic trend chart, so a row
+// limit would silently hide real data rather than "just" being a perf trim.
 export const getMarketData = cache(async (): Promise<{ sales: GemstoneSale[] }> => {
-  const rows = await fetchAllPages<GemstoneSaleRow>(
-    (from, to) =>
-      supabase
-        .from("gemstone_sales")
-        .select(SELECT_COLUMNS)
-        // dredge-history's write gate already excludes reserve_not_met rows,
-        // so no need to re-filter for that here — see HANDOFF_LITHOS_TERMINAL.md.
-        .eq("sale_status", "Sold")
-        .not("sold_price_usd", "is", null)
-        .not("weight_carats", "is", null)
-        .order("auction_starts", { ascending: false, nullsFirst: false })
-        .range(from, to),
-    MARKET_DATA_LIMIT
+  const rows = await fetchAllPages<GemstoneSaleRow>((from, to) =>
+    supabase
+      .from("gemstone_sales")
+      .select(SELECT_COLUMNS)
+      // dredge-history's write gate already excludes reserve_not_met rows,
+      // so no need to re-filter for that here — see HANDOFF_LITHOS_TERMINAL.md.
+      .eq("sale_status", "Sold")
+      .not("sold_price_usd", "is", null)
+      .not("weight_carats", "is", null)
+      .order("auction_starts", { ascending: false, nullsFirst: false })
+      .range(from, to)
   );
 
   const sales = rows.map(toGemstoneSale).filter((sale): sale is GemstoneSale => sale !== null);
@@ -206,19 +207,14 @@ export interface StoneTypeOption {
 
 const UNCLASSIFIED_LABEL = "Unclassified";
 
-// High enough ceiling that it won't clip real growth for a while (current
-// scale is low thousands); if the sweep ever scans past this, switch to a
-// DB-side aggregate (RPC) instead of paging the raw column client-side.
-const STONE_TYPE_SCAN_LIMIT = 50_000;
-
 // Powers the left-nav stone-type switcher. Counts are exact (a full scan,
 // paged past Supabase's 1000-row response cap), not sampled — this is a
-// single skinny column so it's cheap even at tens of thousands of rows.
+// single skinny column so it's cheap even at tens of thousands of rows. If
+// the sweep grows into the hundreds of thousands, switch to a DB-side
+// aggregate (RPC) instead of paging the raw column client-side.
 export const getStoneTypeOptions = cache(async (): Promise<StoneTypeOption[]> => {
-  const rows = await fetchAllPages<{ stone_type: string | null }>(
-    (from, to) =>
-      supabase.from("gemstone_sales").select("stone_type").eq("sale_status", "Sold").range(from, to),
-    STONE_TYPE_SCAN_LIMIT
+  const rows = await fetchAllPages<{ stone_type: string | null }>((from, to) =>
+    supabase.from("gemstone_sales").select("stone_type").eq("sale_status", "Sold").range(from, to)
   );
 
   const counts = new Map<string, number>();
