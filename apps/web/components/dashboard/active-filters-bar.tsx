@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { describeCaratRange, describePriceRange, useFilters } from "@/lib/filter-context";
 
 export function ActiveFiltersBar() {
-  const { stoneType, origin, caratRange, priceRange, certifiedOnly } = useFilters();
+  const { stoneType, origin, color, caratRange, priceRange, certifiedOnly } = useFilters();
 
   return (
     <div className="flex flex-wrap items-center gap-2 text-sm text-muted-foreground">
@@ -14,6 +14,9 @@ export function ActiveFiltersBar() {
       </Badge>
       <Badge variant="outline" className="text-sm">
         {origin === "all" ? "All Origins" : origin}
+      </Badge>
+      <Badge variant="outline" className="text-sm">
+        {color === "all" ? "All Colors" : color}
       </Badge>
       <Badge variant="outline" className="text-sm">
         {describeCaratRange(caratRange[0], caratRange[1])}

@@ -49,7 +49,7 @@ const priceFormatter = new Intl.NumberFormat("en-US", {
 const monthFormatter = new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short" });
 
 export function HistoricPriceChart() {
-  const { stoneType, origin, caratRange, priceRange, certifiedOnly } = useFilters();
+  const { stoneType, origin, color, caratRange, priceRange, certifiedOnly } = useFilters();
   const [scaleType, setScaleType] = useState<ScaleType>("linear");
   const [points, setPoints] = useState<TrendPoint[]>([]);
   const [loading, setLoading] = useState(true);
@@ -58,7 +58,7 @@ export function HistoricPriceChart() {
     let cancelled = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-filter-change is the documented pattern for this (react.dev "Fetching data")
     setLoading(true);
-    getHistoricPriceTrend({ stoneType, origin, caratRange, priceRange, certifiedOnly })
+    getHistoricPriceTrend({ stoneType, origin, color, caratRange, priceRange, certifiedOnly })
       .then((data) => {
         if (!cancelled) setPoints(data);
       })
@@ -68,7 +68,7 @@ export function HistoricPriceChart() {
     return () => {
       cancelled = true;
     };
-  }, [stoneType, origin, caratRange, priceRange, certifiedOnly]);
+  }, [stoneType, origin, color, caratRange, priceRange, certifiedOnly]);
 
   const totalTxns = useMemo(() => points.reduce((sum, p) => sum + p.txnCount, 0), [points]);
 
@@ -93,12 +93,15 @@ export function HistoricPriceChart() {
           symbolSize: 7,
           lineStyle: { color: TIER_COLORS[tier], width: 2 },
           itemStyle: { color: TIER_COLORS[tier] },
+          // Category axis (see xAxis below), so each entry's position comes
+          // from its index in `months` — value is just the y-number, not a
+          // [x, y] pair.
           data: months.map((month) => {
             const p = byMonth.get(month);
-            if (!p) return { value: [month, null] };
+            if (!p) return { value: null };
             const lowConfidence = p.txnCount < LOW_CONFIDENCE_THRESHOLD;
             return {
-              value: [month, p.medianPricePerCarat],
+              value: p.medianPricePerCarat,
               itemStyle: lowConfidence ? { opacity: 0.35 } : undefined,
               symbolSize: lowConfidence ? 5 : 7,
               txnCount: p.txnCount,
@@ -114,19 +117,26 @@ export function HistoricPriceChart() {
         { left: 72, right: 24, top: 24, height: "52%" },
         { left: 72, right: 24, top: "72%", height: "18%" },
       ],
+      // Category, not time: the data is already bucketed into discrete
+      // calendar months, not a continuous stream of timestamps. A time axis
+      // was auto-generating irregular day/week ticks that didn't line up
+      // with the actual (monthly) data points, and made the crosshair show
+      // a raw interpolated timestamp instead of a clean month label.
       xAxis: [
         {
-          type: "time",
+          type: "category",
+          data: months,
           gridIndex: 0,
           axisLine: { lineStyle: { color: THEME.axisLine } },
           axisLabel: { show: false },
           splitLine: { show: false },
         },
         {
-          type: "time",
+          type: "category",
+          data: months,
           gridIndex: 1,
           axisLine: { lineStyle: { color: THEME.axisLine } },
-          axisLabel: { color: THEME.mutedInk },
+          axisLabel: { color: THEME.mutedInk, formatter: (v: string) => monthFormatter.format(new Date(v)) },
           splitLine: { show: false },
         },
       ],
@@ -184,15 +194,15 @@ export function HistoricPriceChart() {
           const items = params as unknown as Array<{
             seriesName: string;
             axisValue: string;
-            data: { value: [string, number | null]; txnCount?: number };
+            data: { value: number | null; txnCount?: number };
             marker: string;
           }>;
           if (items.length === 0) return "";
           const date = monthFormatter.format(new Date(items[0].axisValue));
           const lines = items
-            .filter((it) => it.data.value[1] != null)
+            .filter((it) => it.data.value != null)
             .map((it) => {
-              const price = it.data.value[1] as number;
+              const price = it.data.value as number;
               const count = it.data.txnCount;
               return `<div>${it.marker}${it.seriesName}: <strong>${priceFormatter.format(price)}/ct</strong>${
                 count != null ? ` <span style="color:${THEME.mutedInk}">(${count} sale${count === 1 ? "" : "s"})</span>` : ""
@@ -209,7 +219,7 @@ export function HistoricPriceChart() {
           xAxisIndex: 1,
           yAxisIndex: 1,
           itemStyle: { color: THEME.volumeBar },
-          data: months.map((month) => [month, volumeByMonth.get(month) ?? 0]),
+          data: months.map((month) => volumeByMonth.get(month) ?? 0),
         },
       ],
     };
@@ -230,7 +240,7 @@ export function HistoricPriceChart() {
         </div>
         <ScaleToggle value={scaleType} onChange={setScaleType} />
       </div>
-      <ChartCaption />
+      <ChartCaption blendedColors={color === "all"} />
       {loading && points.length === 0 ? (
         <div className="flex h-[460px] items-center justify-center text-sm text-muted-foreground">
           Loading trend…
@@ -269,12 +279,22 @@ function ScaleToggle({ value, onChange }: { value: ScaleType; onChange: (v: Scal
   );
 }
 
-function ChartCaption() {
+function ChartCaption({ blendedColors }: { blendedColors: boolean }) {
   return (
-    <div className="flex flex-wrap items-center gap-4 border-y border-border/60 py-3 text-xs text-muted-foreground">
-      <span>One line per weight tier — carat brackets, not raw price, so sizes are never compared directly.</span>
-      <span>· Faint points = fewer than {LOW_CONFIDENCE_THRESHOLD} sales that month (noisy median)</span>
-      <span>· Bars below show sale volume per month</span>
+    <div className="flex flex-col gap-2 border-y border-border/60 py-3 text-xs text-muted-foreground">
+      <div className="flex flex-wrap items-center gap-4">
+        <span>One line per weight tier — carat brackets, not raw price, so sizes are never compared directly.</span>
+        <span>· Faint points = fewer than {LOW_CONFIDENCE_THRESHOLD} sales that month (noisy median)</span>
+        <span>· Bars below show sale volume per month</span>
+      </div>
+      {blendedColors ? (
+        <div className="text-amber-500">
+          &ldquo;All Colors&rdquo; blends every variety together — a species can span a 10x+ price range by
+          color/variety alone (e.g. Demantoid vs. common Garnet), which can make a weight tier look mispriced
+          when it&rsquo;s really just a shifting color mix. Pick a specific Color in the sidebar for a clean
+          per-variety trend.
+        </div>
+      ) : null}
     </div>
   );
 }

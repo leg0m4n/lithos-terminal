@@ -51,6 +51,7 @@ export function describePriceRange(min: number, max: number): string {
 interface FilterState {
   stoneType: string; // "all" | specific stone_type value
   origin: string; // "all" | specific origin name
+  color: string; // "all" | specific color_category value
   caratRange: [number, number];
   priceRange: [number, number];
   certifiedOnly: boolean;
@@ -59,6 +60,7 @@ interface FilterState {
 interface FilterContextValue extends FilterState {
   setStoneType: (stoneType: string) => void;
   setOrigin: (origin: string) => void;
+  setColor: (color: string) => void;
   setCaratRange: (range: [number, number]) => void;
   setPriceRange: (range: [number, number]) => void;
   setCertifiedOnly: (value: boolean) => void;
@@ -66,6 +68,7 @@ interface FilterContextValue extends FilterState {
 }
 
 const DEFAULT_ORIGIN = "all";
+const DEFAULT_COLOR = "all";
 const DEFAULT_CARAT_RANGE: [number, number] = [CARAT_MIN, CARAT_MAX];
 const DEFAULT_PRICE_RANGE: [number, number] = [PRICE_MIN, PRICE_MAX];
 const DEFAULT_CERTIFIED_ONLY = false;
@@ -83,6 +86,7 @@ interface FilterProviderProps {
 export function FilterProvider({ children, defaultStoneType = "all" }: FilterProviderProps) {
   const [stoneType, setStoneType] = useState(defaultStoneType);
   const [origin, setOrigin] = useState(DEFAULT_ORIGIN);
+  const [color, setColor] = useState(DEFAULT_COLOR);
   const [caratRange, setCaratRange] = useState<[number, number]>(DEFAULT_CARAT_RANGE);
   const [priceRange, setPriceRange] = useState<[number, number]>(DEFAULT_PRICE_RANGE);
   const [certifiedOnly, setCertifiedOnly] = useState(DEFAULT_CERTIFIED_ONLY);
@@ -91,6 +95,7 @@ export function FilterProvider({ children, defaultStoneType = "all" }: FilterPro
     // Deliberately leaves stoneType alone — "Reset" clears the filter
     // panel's own controls, not the left-nav category you're browsing.
     setOrigin(DEFAULT_ORIGIN);
+    setColor(DEFAULT_COLOR);
     setCaratRange(DEFAULT_CARAT_RANGE);
     setPriceRange(DEFAULT_PRICE_RANGE);
     setCertifiedOnly(DEFAULT_CERTIFIED_ONLY);
@@ -100,17 +105,19 @@ export function FilterProvider({ children, defaultStoneType = "all" }: FilterPro
     () => ({
       stoneType,
       origin,
+      color,
       caratRange,
       priceRange,
       certifiedOnly,
       setStoneType,
       setOrigin,
+      setColor,
       setCaratRange,
       setPriceRange,
       setCertifiedOnly,
       resetFilters,
     }),
-    [stoneType, origin, caratRange, priceRange, certifiedOnly]
+    [stoneType, origin, color, caratRange, priceRange, certifiedOnly]
   );
 
   return (

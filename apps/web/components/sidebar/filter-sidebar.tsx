@@ -23,47 +23,66 @@ import {
   PRICE_BRACKET_STOPS,
   useFilters,
 } from "@/lib/filter-context";
-import { getOriginOptionsForType, type StoneTypeOption } from "@/lib/market-data";
+import {
+  getColorOptionsForType,
+  getOriginOptionsForType,
+  type StoneTypeOption,
+} from "@/lib/market-data";
 
 interface FilterSidebarProps {
   stoneTypeOptions: StoneTypeOption[];
+}
+
+// Origin and Color are both "scoped to the selected stone type, live query,
+// reset if the current pick goes stale" — same shape, so shared here rather
+// than duplicating the effect twice.
+function useScopedOptions(
+  stoneType: string,
+  value: string,
+  setValue: (v: string) => void,
+  fetcher: (stoneType: string) => Promise<string[]>
+): string[] {
+  const [options, setOptions] = useState<string[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetcher(stoneType).then((opts) => {
+      if (cancelled) return;
+      setOptions(opts);
+      // A previously-picked value can go stale the moment the stone type
+      // changes (e.g. "Tanzania" selected under Tanzanite, then switching
+      // to Sapphire) — silently filtering everything out otherwise.
+      if (value !== "all" && !opts.includes(value)) {
+        setValue("all");
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- value/setValue deliberately excluded: this only re-runs on stoneType change, not on every pick
+  }, [stoneType, fetcher]);
+
+  return options;
 }
 
 export function FilterSidebar({ stoneTypeOptions }: FilterSidebarProps) {
   const {
     stoneType,
     origin,
+    color,
     caratRange,
     priceRange,
     certifiedOnly,
     setOrigin,
+    setColor,
     setCaratRange,
     setPriceRange,
     setCertifiedOnly,
     resetFilters,
   } = useFilters();
 
-  const [originOptions, setOriginOptions] = useState<string[]>([]);
-
-  // Origins are scoped to the selected stone type (a Sapphire buyer
-  // shouldn't see Tanzanite-only origins) — a live scoped query, since there
-  // is no longer a full client-side dataset to derive this from.
-  useEffect(() => {
-    let cancelled = false;
-    getOriginOptionsForType(stoneType).then((options) => {
-      if (cancelled) return;
-      setOriginOptions(options);
-      // A previously-picked origin can go stale the moment the stone type
-      // changes — silently filtering everything out otherwise.
-      if (origin !== "all" && !options.includes(origin)) {
-        setOrigin("all");
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- origin/setOrigin deliberately excluded: this only re-runs on stoneType change, not on every origin pick
-  }, [stoneType]);
+  const originOptions = useScopedOptions(stoneType, origin, setOrigin, getOriginOptionsForType);
+  const colorOptions = useScopedOptions(stoneType, color, setColor, getColorOptionsForType);
 
   return (
     <aside className="flex h-full w-80 shrink-0 flex-col gap-7 overflow-y-auto border-r border-sidebar-border bg-sidebar px-6 py-7 text-sidebar-foreground">
@@ -93,6 +112,25 @@ export function FilterSidebar({ stoneTypeOptions }: FilterSidebarProps) {
           <SelectContent>
             <SelectItem value="all">All Origins</SelectItem>
             {originOptions.map((name) => (
+              <SelectItem key={name} value={name} className="text-base">
+                {name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      <Separator className="bg-sidebar-border" />
+
+      <div className="flex flex-col gap-2.5">
+        <Label className="text-sm text-muted-foreground">Color</Label>
+        <Select value={color} onValueChange={setColor}>
+          <SelectTrigger className="h-10 w-full text-base">
+            <SelectValue placeholder="All Colors" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Colors</SelectItem>
+            {colorOptions.map((name) => (
               <SelectItem key={name} value={name} className="text-base">
                 {name}
               </SelectItem>

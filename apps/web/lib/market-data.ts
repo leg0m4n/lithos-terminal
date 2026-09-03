@@ -94,6 +94,7 @@ function toGemstoneSale(row: GemstoneSaleRow): GemstoneSale | null {
 export interface SaleFilters {
   stoneType: string; // "all" | specific stone_type value
   origin: string; // "all" | specific origin name
+  color: string; // "all" | specific color_category value
   caratRange: [number, number];
   priceRange: [number, number];
   certifiedOnly: boolean;
@@ -108,6 +109,7 @@ function toRpcParams(filters: SaleFilters) {
   return {
     p_stone_type: filters.stoneType === "all" ? null : filters.stoneType,
     p_origin: filters.origin === "all" ? null : filters.origin,
+    p_color: filters.color === "all" ? null : filters.color,
     p_min_carat: filters.caratRange[0] > 0 ? filters.caratRange[0] : null,
     p_max_carat: filters.caratRange[1] < CARAT_MAX ? filters.caratRange[1] : null,
     p_min_price: filters.priceRange[0] > 0 ? filters.priceRange[0] : null,
@@ -237,4 +239,26 @@ export async function getOriginOptionsForType(stoneType: string): Promise<string
   if (error) throw new Error(`origin_counts_for_type failed: ${error.message}`);
 
   return (data as OriginCountRow[]).map((row) => row.origin);
+}
+
+interface ColorCountRow {
+  color_category: string;
+  txn_count: number;
+}
+
+// Colors scoped to the selected stone type. This is the fix for a real
+// composition-confound bug: "Garnet" blends rare Demantoid/Tsavorite
+// (green, $29-68/carat) with common Red/Orange/Yellow/Pink garnet
+// ($3-14/carat), and green's share of the mix shrinks from ~59% in the
+// <1ct tier to ~9% in the 10ct+ tier — which by itself produces an
+// apparent "smaller stones cost more per carat" pattern in the blended
+// trend that has nothing to do with size. Filtering to one color at a time
+// removes that confound.
+export async function getColorOptionsForType(stoneType: string): Promise<string[]> {
+  const { data, error } = await supabase.rpc("color_counts_for_type", {
+    p_stone_type: stoneType === "all" ? null : stoneType,
+  });
+  if (error) throw new Error(`color_counts_for_type failed: ${error.message}`);
+
+  return (data as ColorCountRow[]).map((row) => row.color_category);
 }

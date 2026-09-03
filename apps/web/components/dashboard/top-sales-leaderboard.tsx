@@ -22,7 +22,7 @@ const dateFormatter = new Intl.DateTimeFormat("en-US", { year: "numeric", month:
 // with photos is also just more legible for "spot the exceptional sale" than
 // hunting for a highlighted dot in a scatter.
 export function TopSalesLeaderboard() {
-  const { stoneType, origin, caratRange, priceRange, certifiedOnly } = useFilters();
+  const { stoneType, origin, color, caratRange, priceRange, certifiedOnly } = useFilters();
   const [outliers, setOutliers] = useState<GemstoneSale[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -30,7 +30,7 @@ export function TopSalesLeaderboard() {
     let cancelled = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-filter-change is the documented pattern for this (react.dev "Fetching data")
     setLoading(true);
-    getTopPriceOutliers({ stoneType, origin, caratRange, priceRange, certifiedOnly })
+    getTopPriceOutliers({ stoneType, origin, color, caratRange, priceRange, certifiedOnly })
       .then((data) => {
         if (!cancelled) setOutliers(data);
       })
@@ -40,7 +40,7 @@ export function TopSalesLeaderboard() {
     return () => {
       cancelled = true;
     };
-  }, [stoneType, origin, caratRange, priceRange, certifiedOnly]);
+  }, [stoneType, origin, color, caratRange, priceRange, certifiedOnly]);
 
   return (
     <Card className="flex flex-col gap-4 p-6">

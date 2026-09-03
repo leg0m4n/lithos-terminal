@@ -28,7 +28,7 @@ function sourceDomain(url: string): string {
 }
 
 export function GemstoneGrid() {
-  const { stoneType, origin, caratRange, priceRange, certifiedOnly } = useFilters();
+  const { stoneType, origin, color, caratRange, priceRange, certifiedOnly } = useFilters();
   const [page, setPage] = useState(0);
   const [listings, setListings] = useState<GemstoneSale[]>([]);
   const [totalCount, setTotalCount] = useState(0);
@@ -39,13 +39,13 @@ export function GemstoneGrid() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- resetting local pagination in response to external filter state changing
     setPage(0);
-  }, [stoneType, origin, caratRange, priceRange, certifiedOnly]);
+  }, [stoneType, origin, color, caratRange, priceRange, certifiedOnly]);
 
   useEffect(() => {
     let cancelled = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-filter-change is the documented pattern for this (react.dev "Fetching data")
     setLoading(true);
-    getSalesPage({ stoneType, origin, caratRange, priceRange, certifiedOnly }, page)
+    getSalesPage({ stoneType, origin, color, caratRange, priceRange, certifiedOnly }, page)
       .then((result) => {
         if (cancelled) return;
         setListings(result.rows);
@@ -57,7 +57,7 @@ export function GemstoneGrid() {
     return () => {
       cancelled = true;
     };
-  }, [stoneType, origin, caratRange, priceRange, certifiedOnly, page]);
+  }, [stoneType, origin, color, caratRange, priceRange, certifiedOnly, page]);
 
   const pageCount = Math.max(1, Math.ceil(totalCount / GRID_PAGE_SIZE));
 
