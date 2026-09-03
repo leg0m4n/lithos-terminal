@@ -1,10 +1,11 @@
 "use client";
 
-import { useMemo } from "react";
+import { useEffect, useState } from "react";
 import Image from "next/image";
 import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { useFilters } from "@/lib/filter-context";
-import { filterSales, type GemstoneSale } from "@/lib/market-data";
+import { getSalesPage, GRID_PAGE_SIZE, type GemstoneSale } from "@/lib/market-data";
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -26,30 +27,70 @@ function sourceDomain(url: string): string {
   }
 }
 
-const GRID_SIZE = 50;
-
-interface GemstoneGridProps {
-  sales: GemstoneSale[];
-}
-
-export function GemstoneGrid({ sales }: GemstoneGridProps) {
+export function GemstoneGrid() {
   const { stoneType, origin, caratRange, priceRange, certifiedOnly } = useFilters();
+  const [page, setPage] = useState(0);
+  const [listings, setListings] = useState<GemstoneSale[]>([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [loading, setLoading] = useState(true);
 
-  // `sales` arrives sorted by auction_starts descending from the server
-  // query, so slicing after filtering keeps "most recent" semantics.
-  const listings = useMemo(
-    () =>
-      filterSales(sales, { stoneType, origin, caratRange, priceRange, certifiedOnly }).slice(0, GRID_SIZE),
-    [sales, stoneType, origin, caratRange, priceRange, certifiedOnly]
-  );
+  // Any filter change should snap back to page 0 — staying on page 12 of a
+  // now-much-smaller filtered set would just show an empty page.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- resetting local pagination in response to external filter state changing
+    setPage(0);
+  }, [stoneType, origin, caratRange, priceRange, certifiedOnly]);
+
+  useEffect(() => {
+    let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-filter-change is the documented pattern for this (react.dev "Fetching data")
+    setLoading(true);
+    getSalesPage({ stoneType, origin, caratRange, priceRange, certifiedOnly }, page)
+      .then((result) => {
+        if (cancelled) return;
+        setListings(result.rows);
+        setTotalCount(result.totalCount);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [stoneType, origin, caratRange, priceRange, certifiedOnly, page]);
+
+  const pageCount = Math.max(1, Math.ceil(totalCount / GRID_PAGE_SIZE));
 
   return (
     <Card className="flex flex-col gap-4 p-6">
-      <div>
-        <p className="text-lg font-medium text-foreground">Sold Listings</p>
-        <p className="text-sm text-muted-foreground">
-          {listings.length.toLocaleString()} most recent sales
-        </p>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <p className="text-lg font-medium text-foreground">Sold Listings</p>
+          <p className="text-sm text-muted-foreground">
+            {totalCount.toLocaleString()} sales matching current filters
+          </p>
+        </div>
+        <div className="flex items-center gap-2 text-sm text-muted-foreground">
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={page === 0}
+            onClick={() => setPage((p) => Math.max(0, p - 1))}
+          >
+            Prev
+          </Button>
+          <span className="tabular-nums">
+            Page {page + 1} of {pageCount}
+          </span>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={page + 1 >= pageCount}
+            onClick={() => setPage((p) => p + 1)}
+          >
+            Next
+          </Button>
+        </div>
       </div>
 
       <div className="overflow-x-auto">
@@ -65,56 +106,70 @@ export function GemstoneGrid({ sales }: GemstoneGridProps) {
             </tr>
           </thead>
           <tbody>
-            {listings.map((listing) => (
-              <tr
-                key={listing.sourceUrl}
-                className="border-b border-border/30 last:border-b-0 hover:bg-muted/40"
-              >
-                <td className="py-2 pr-3">
-                  <div className="flex items-center gap-3">
-                    <div className="relative size-10 shrink-0 overflow-hidden rounded-md bg-muted">
-                      {listing.imageUrl ? (
-                        <Image
-                          src={listing.imageUrl}
-                          alt={listing.stoneType ?? "Gemstone"}
-                          fill
-                          sizes="40px"
-                          className="object-cover"
-                        />
-                      ) : null}
-                    </div>
-                    <div className="flex flex-col">
-                      <span className="font-medium text-foreground">
-                        {listing.stoneType ?? "Unclassified"}
-                      </span>
-                      {listing.colorCategory ? (
-                        <span className="text-xs text-muted-foreground">{listing.colorCategory}</span>
-                      ) : null}
-                    </div>
-                  </div>
-                </td>
-                <td className="py-2 pr-3 tabular-nums text-foreground">
-                  {listing.weightCarats.toFixed(2)}ct
-                </td>
-                <td className="py-2 pr-3 tabular-nums text-foreground">
-                  {currencyFormatter.format(listing.priceUsd)}
-                </td>
-                <td className="py-2 pr-3 text-muted-foreground">{listing.origin ?? "—"}</td>
-                <td className="py-2 pr-3 text-muted-foreground">
-                  {listing.auctionStartsAt ? dateFormatter.format(new Date(listing.auctionStartsAt)) : "—"}
-                </td>
-                <td className="py-2 pr-3">
-                  <a
-                    href={listing.sourceUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs text-primary hover:underline"
-                  >
-                    {sourceDomain(listing.sourceUrl)}
-                  </a>
+            {loading && listings.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="py-8 text-center text-sm text-muted-foreground">
+                  Loading…
                 </td>
               </tr>
-            ))}
+            ) : listings.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="py-8 text-center text-sm text-muted-foreground">
+                  No sales match the current filters.
+                </td>
+              </tr>
+            ) : (
+              listings.map((listing) => (
+                <tr
+                  key={listing.sourceUrl}
+                  className="border-b border-border/30 last:border-b-0 hover:bg-muted/40"
+                >
+                  <td className="py-2 pr-3">
+                    <div className="flex items-center gap-3">
+                      <div className="relative size-10 shrink-0 overflow-hidden rounded-md bg-muted">
+                        {listing.imageUrl ? (
+                          <Image
+                            src={listing.imageUrl}
+                            alt={listing.stoneType ?? "Gemstone"}
+                            fill
+                            sizes="40px"
+                            className="object-cover"
+                          />
+                        ) : null}
+                      </div>
+                      <div className="flex flex-col">
+                        <span className="font-medium text-foreground">
+                          {listing.stoneType ?? "Unclassified"}
+                        </span>
+                        {listing.colorCategory ? (
+                          <span className="text-xs text-muted-foreground">{listing.colorCategory}</span>
+                        ) : null}
+                      </div>
+                    </div>
+                  </td>
+                  <td className="py-2 pr-3 tabular-nums text-foreground">
+                    {listing.weightCarats.toFixed(2)}ct
+                  </td>
+                  <td className="py-2 pr-3 tabular-nums text-foreground">
+                    {currencyFormatter.format(listing.priceUsd)}
+                  </td>
+                  <td className="py-2 pr-3 text-muted-foreground">{listing.origin ?? "—"}</td>
+                  <td className="py-2 pr-3 text-muted-foreground">
+                    {listing.auctionStartsAt ? dateFormatter.format(new Date(listing.auctionStartsAt)) : "—"}
+                  </td>
+                  <td className="py-2 pr-3">
+                    <a
+                      href={listing.sourceUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs text-primary hover:underline"
+                    >
+                      {sourceDomain(listing.sourceUrl)}
+                    </a>
+                  </td>
+                </tr>
+              ))
+            )}
           </tbody>
         </table>
       </div>

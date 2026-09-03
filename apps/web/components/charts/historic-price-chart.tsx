@@ -1,12 +1,12 @@
 "use client";
 
-import { useMemo, useState, type ComponentType } from "react";
+import { useEffect, useMemo, useState, type ComponentType } from "react";
 import EChartsReactImport, { type EChartsReactProps } from "echarts-for-react";
 import type { EChartsOption } from "echarts";
 import { Card } from "@/components/ui/card";
 import { useFilters } from "@/lib/filter-context";
 import { cn } from "@/lib/utils";
-import { filterSales, type GemstoneSale } from "@/lib/market-data";
+import { getHistoricPriceTrend, type TrendPoint } from "@/lib/market-data";
 
 type ScaleType = "linear" | "log";
 
@@ -19,164 +19,203 @@ const THEME = {
   mutedInk: "#9b9fa3",
   gridline: "rgba(255,255,255,0.08)",
   axisLine: "rgba(255,255,255,0.18)",
-  surfaceRing: "#25282b",
   tooltipBg: "#25282b",
   tooltipBorder: "rgba(255,255,255,0.14)",
-  // Reclaimed from the old "active listing" gold now that every row here is
-  // a confirmed sale — one series, one accent, no legend needed.
-  sold: "#ddb049",
+  volumeBar: "rgba(155,159,163,0.5)",
 };
 
-const MIN_CARAT_FOR_SIZE = 1;
-const MAX_CARAT_FOR_SIZE = 15;
-const MIN_SYMBOL_SIZE = 6;
-const MAX_SYMBOL_SIZE = 22;
+// Fixed, never-cycled per weight tier — assigned in tier order so the same
+// bracket always reads the same color across sessions/filters.
+const TIER_COLORS: Record<string, string> = {
+  "<1ct": "#7fb3d5",
+  "1-3ct": "#ddb049",
+  "3-5ct": "#b088c9",
+  "5-10ct": "#d97757",
+  "10ct+": "#6fbf9e",
+};
+const TIER_ORDER = ["<1ct", "1-3ct", "3-5ct", "5-10ct", "10ct+"];
 
-function symbolSizeForCarat(carats: number): number {
-  if (carats <= MIN_CARAT_FOR_SIZE) return MIN_SYMBOL_SIZE;
-  if (carats >= MAX_CARAT_FOR_SIZE) return MAX_SYMBOL_SIZE;
-  const t = (carats - MIN_CARAT_FOR_SIZE) / (MAX_CARAT_FOR_SIZE - MIN_CARAT_FOR_SIZE);
-  return MIN_SYMBOL_SIZE + t * (MAX_SYMBOL_SIZE - MIN_SYMBOL_SIZE);
-}
+// Below this many sales in a bucket, the median is noisy enough that it
+// shouldn't visually read with the same confidence as a well-traded month —
+// dimmed rather than hidden, so thin history is still visible as a hint.
+const LOW_CONFIDENCE_THRESHOLD = 5;
 
-const currencyFormatter = new Intl.NumberFormat("en-US", {
+const priceFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
-  maximumFractionDigits: 0,
+  maximumFractionDigits: 2,
 });
 
-function formatCurrency(value: number): string {
-  return currencyFormatter.format(value);
-}
+const monthFormatter = new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short" });
 
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (c) =>
-    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!
-  );
-}
-
-const treatmentLabel: Record<string, string> = {
-  unheated: "Unheated",
-  heated_thermal: "Heated (Thermal)",
-};
-
-interface ScatterPointDatum {
-  value: [number, number]; // [auctionStartsAtMs, priceUsd]
-  symbolSize: number;
-  itemStyle: { color: string; borderColor: string; borderWidth: number };
-  sale: GemstoneSale;
-}
-
-interface HistoricPriceChartProps {
-  sales: GemstoneSale[];
-}
-
-export function HistoricPriceChart({ sales }: HistoricPriceChartProps) {
+export function HistoricPriceChart() {
   const { stoneType, origin, caratRange, priceRange, certifiedOnly } = useFilters();
   const [scaleType, setScaleType] = useState<ScaleType>("linear");
+  const [points, setPoints] = useState<TrendPoint[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const filtered = useMemo(() => {
-    return filterSales(sales, { stoneType, origin, caratRange, priceRange, certifiedOnly }).filter(
-      // Can't place a point on a time axis without a timestamp.
-      (s) => s.auctionStartsAt !== null
-    );
-  }, [sales, stoneType, origin, caratRange, priceRange, certifiedOnly]);
+  useEffect(() => {
+    let cancelled = false;
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-filter-change is the documented pattern for this (react.dev "Fetching data")
+    setLoading(true);
+    getHistoricPriceTrend({ stoneType, origin, caratRange, priceRange, certifiedOnly })
+      .then((data) => {
+        if (!cancelled) setPoints(data);
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [stoneType, origin, caratRange, priceRange, certifiedOnly]);
+
+  const totalTxns = useMemo(() => points.reduce((sum, p) => sum + p.txnCount, 0), [points]);
 
   const option = useMemo(() => {
-    const scatterData: ScatterPointDatum[] = filtered.map((s) => ({
-      value: [new Date(s.auctionStartsAt!).getTime(), s.priceUsd],
-      symbolSize: symbolSizeForCarat(s.weightCarats),
-      itemStyle: {
-        color: THEME.sold,
-        borderColor: THEME.surfaceRing,
-        borderWidth: 1.5,
-      },
-      sale: s,
-    }));
+    const months = [...new Set(points.map((p) => p.month))].sort();
+
+    const volumeByMonth = new Map<string, number>();
+    for (const p of points) {
+      volumeByMonth.set(p.month, (volumeByMonth.get(p.month) ?? 0) + p.txnCount);
+    }
+
+    const lineSeries = TIER_ORDER.filter((tier) => points.some((p) => p.weightTier === tier)).map(
+      (tier) => {
+        const byMonth = new Map(points.filter((p) => p.weightTier === tier).map((p) => [p.month, p]));
+        return {
+          type: "line" as const,
+          name: tier,
+          xAxisIndex: 0,
+          yAxisIndex: 0,
+          connectNulls: true,
+          showSymbol: true,
+          symbolSize: 7,
+          lineStyle: { color: TIER_COLORS[tier], width: 2 },
+          itemStyle: { color: TIER_COLORS[tier] },
+          data: months.map((month) => {
+            const p = byMonth.get(month);
+            if (!p) return { value: [month, null] };
+            const lowConfidence = p.txnCount < LOW_CONFIDENCE_THRESHOLD;
+            return {
+              value: [month, p.medianPricePerCarat],
+              itemStyle: lowConfidence ? { opacity: 0.35 } : undefined,
+              symbolSize: lowConfidence ? 5 : 7,
+              txnCount: p.txnCount,
+            };
+          }),
+        };
+      }
+    );
 
     const built: EChartsOption = {
       backgroundColor: "transparent",
-      grid: { left: 72, right: 24, top: 24, bottom: 72 },
-      xAxis: {
-        type: "time",
-        name: "Auction Start",
-        nameTextStyle: { color: THEME.mutedInk, align: "left" },
-        axisLine: { lineStyle: { color: THEME.axisLine } },
-        axisLabel: { color: THEME.mutedInk },
-        splitLine: { show: false },
-      },
-      yAxis: {
-        type: scaleType === "log" ? "log" : "value",
-        min: scaleType === "log" ? undefined : 0,
-        name: "Sold Price (USD)",
-        nameTextStyle: { color: THEME.mutedInk, align: "left" },
-        axisLabel: { color: THEME.mutedInk, formatter: (v: number) => formatCurrency(v) },
-        axisLine: { show: false },
-        splitLine: { lineStyle: { color: THEME.gridline } },
-      },
+      grid: [
+        { left: 72, right: 24, top: 24, height: "52%" },
+        { left: 72, right: 24, top: "72%", height: "18%" },
+      ],
+      xAxis: [
+        {
+          type: "time",
+          gridIndex: 0,
+          axisLine: { lineStyle: { color: THEME.axisLine } },
+          axisLabel: { show: false },
+          splitLine: { show: false },
+        },
+        {
+          type: "time",
+          gridIndex: 1,
+          axisLine: { lineStyle: { color: THEME.axisLine } },
+          axisLabel: { color: THEME.mutedInk },
+          splitLine: { show: false },
+        },
+      ],
+      yAxis: [
+        {
+          type: scaleType === "log" ? "log" : "value",
+          min: scaleType === "log" ? undefined : 0,
+          gridIndex: 0,
+          name: "Median $/carat",
+          nameTextStyle: { color: THEME.mutedInk, align: "left" },
+          axisLabel: { color: THEME.mutedInk, formatter: (v: number) => `$${v}` },
+          axisLine: { show: false },
+          splitLine: { lineStyle: { color: THEME.gridline } },
+        },
+        {
+          type: "value",
+          gridIndex: 1,
+          name: "Sales",
+          nameTextStyle: { color: THEME.mutedInk, align: "left" },
+          axisLabel: { color: THEME.mutedInk },
+          axisLine: { show: false },
+          splitLine: { lineStyle: { color: THEME.gridline } },
+        },
+      ],
+      axisPointer: { link: [{ xAxisIndex: [0, 1] }] },
       dataZoom: [
-        { type: "inside", xAxisIndex: 0 },
+        { type: "inside", xAxisIndex: [0, 1] },
         {
           type: "slider",
-          xAxisIndex: 0,
-          height: 20,
-          bottom: 12,
+          xAxisIndex: [0, 1],
+          height: 16,
+          bottom: 4,
           borderColor: "transparent",
           backgroundColor: "rgba(255,255,255,0.03)",
           fillerColor: "rgba(221,176,73,0.18)",
           handleStyle: { color: THEME.ink, borderColor: THEME.ink },
-          dataBackground: {
-            lineStyle: { color: THEME.mutedInk },
-            areaStyle: { color: "rgba(255,255,255,0.05)" },
-          },
           textStyle: { color: THEME.mutedInk },
         },
       ],
+      legend: {
+        top: 0,
+        textStyle: { color: THEME.mutedInk },
+        data: lineSeries.map((s) => s.name),
+      },
       tooltip: {
-        trigger: "item",
+        trigger: "axis",
+        axisPointer: { type: "cross" },
         confine: true,
         backgroundColor: THEME.tooltipBg,
         borderColor: THEME.tooltipBorder,
         borderWidth: 1,
         extraCssText: "border-radius: 8px;",
         textStyle: { color: THEME.ink },
-        // Hover-to-reveal image + basic info card — nothing shows until the
-        // pointer is over a datapoint.
         formatter: (params) => {
-          const { data } = params as unknown as { data: ScatterPointDatum };
-          const s = data.sale;
-          const date = new Date(s.auctionStartsAt!).toLocaleDateString("en-US", {
-            year: "numeric",
-            month: "short",
-            day: "numeric",
-          });
-          const imageHtml = s.imageUrl
-            ? `<img src="${escapeHtml(s.imageUrl)}" style="width:200px;height:150px;object-fit:cover;border-radius:6px;display:block;margin-bottom:8px" />`
-            : "";
-          const certLine = s.isCertified
-            ? `${s.certificationLab ? escapeHtml(s.certificationLab) : "Certified"}<br/>`
-            : "";
-          return `<div style="min-width:200px">
-            ${imageHtml}
-            <div style="font-weight:600;font-size:14px;margin-bottom:2px">${formatCurrency(s.priceUsd)}</div>
-            <div style="color:${THEME.mutedInk};font-size:12px;margin-bottom:8px">Auction started ${date}</div>
-            <div style="font-size:12px;line-height:1.6">
-              ${escapeHtml(s.stoneType ?? "Unclassified")} · ${s.weightCarats.toFixed(2)}ct<br/>
-              ${s.colorCategory ? `${escapeHtml(s.colorCategory)}<br/>` : ""}
-              ${s.shape ? `${escapeHtml(s.shape)}${s.cutStyle ? ` · ${escapeHtml(s.cutStyle)}` : ""}<br/>` : ""}
-              ${s.clarity ? `Clarity: ${escapeHtml(s.clarity)}<br/>` : ""}
-              ${s.origin ? `${escapeHtml(s.origin)}<br/>` : ""}
-              ${s.treatmentStatus ? `${treatmentLabel[s.treatmentStatus]}<br/>` : ""}
-              ${certLine}
-            </div>
-          </div>`;
+          const items = params as unknown as Array<{
+            seriesName: string;
+            axisValue: string;
+            data: { value: [string, number | null]; txnCount?: number };
+            marker: string;
+          }>;
+          if (items.length === 0) return "";
+          const date = monthFormatter.format(new Date(items[0].axisValue));
+          const lines = items
+            .filter((it) => it.data.value[1] != null)
+            .map((it) => {
+              const price = it.data.value[1] as number;
+              const count = it.data.txnCount;
+              return `<div>${it.marker}${it.seriesName}: <strong>${priceFormatter.format(price)}/ct</strong>${
+                count != null ? ` <span style="color:${THEME.mutedInk}">(${count} sale${count === 1 ? "" : "s"})</span>` : ""
+              }</div>`;
+            });
+          return `<div style="font-weight:600;margin-bottom:4px">${date}</div>${lines.join("")}`;
         },
       },
-      series: [{ type: "scatter", data: scatterData, z: 2 }],
+      series: [
+        ...lineSeries,
+        {
+          type: "bar",
+          name: "Sales",
+          xAxisIndex: 1,
+          yAxisIndex: 1,
+          itemStyle: { color: THEME.volumeBar },
+          data: months.map((month) => [month, volumeByMonth.get(month) ?? 0]),
+        },
+      ],
     };
 
     return built;
-  }, [filtered, scaleType]);
+  }, [points, scaleType]);
 
   return (
     <Card className="flex flex-col gap-4 p-6">
@@ -186,13 +225,23 @@ export function HistoricPriceChart({ sales }: HistoricPriceChartProps) {
             {stoneType === "all" ? "All Stones" : stoneType} — Historic Price Trend
           </p>
           <p className="text-sm text-muted-foreground">
-            Sold price · {filtered.length.toLocaleString()} listings
+            Median $/carat by weight tier · {totalTxns.toLocaleString()} sales
           </p>
         </div>
         <ScaleToggle value={scaleType} onChange={setScaleType} />
       </div>
       <ChartCaption />
-      <ReactECharts option={option} style={{ height: 460, width: "100%" }} notMerge lazyUpdate />
+      {loading && points.length === 0 ? (
+        <div className="flex h-[460px] items-center justify-center text-sm text-muted-foreground">
+          Loading trend…
+        </div>
+      ) : points.length === 0 ? (
+        <div className="flex h-[460px] items-center justify-center text-sm text-muted-foreground">
+          No sales match the current filters.
+        </div>
+      ) : (
+        <ReactECharts option={option} style={{ height: 460, width: "100%" }} notMerge lazyUpdate />
+      )}
     </Card>
   );
 }
@@ -223,13 +272,9 @@ function ScaleToggle({ value, onChange }: { value: ScaleType; onChange: (v: Scal
 function ChartCaption() {
   return (
     <div className="flex flex-wrap items-center gap-4 border-y border-border/60 py-3 text-xs text-muted-foreground">
-      <span>Every point is a confirmed sale (reserve met).</span>
-      <span>· Marker size = carat weight</span>
-      <span>· Hover a point for photo &amp; details</span>
-      <span>
-        · X-axis is auction start date — GemRockAuctions doesn&apos;t expose a
-        confirmed sale timestamp
-      </span>
+      <span>One line per weight tier — carat brackets, not raw price, so sizes are never compared directly.</span>
+      <span>· Faint points = fewer than {LOW_CONFIDENCE_THRESHOLD} sales that month (noisy median)</span>
+      <span>· Bars below show sale volume per month</span>
     </div>
   );
 }

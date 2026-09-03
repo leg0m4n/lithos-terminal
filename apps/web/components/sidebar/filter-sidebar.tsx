@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useState } from "react";
 import { BadgeCheck } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
@@ -23,14 +23,13 @@ import {
   PRICE_BRACKET_STOPS,
   useFilters,
 } from "@/lib/filter-context";
-import { originOptionsForType, type GemstoneSale, type StoneTypeOption } from "@/lib/market-data";
+import { getOriginOptionsForType, type StoneTypeOption } from "@/lib/market-data";
 
 interface FilterSidebarProps {
-  sales: GemstoneSale[];
   stoneTypeOptions: StoneTypeOption[];
 }
 
-export function FilterSidebar({ sales, stoneTypeOptions }: FilterSidebarProps) {
+export function FilterSidebar({ stoneTypeOptions }: FilterSidebarProps) {
   const {
     stoneType,
     origin,
@@ -44,19 +43,27 @@ export function FilterSidebar({ sales, stoneTypeOptions }: FilterSidebarProps) {
     resetFilters,
   } = useFilters();
 
-  const originOptions = useMemo(
-    () => originOptionsForType(sales, stoneType),
-    [sales, stoneType]
-  );
+  const [originOptions, setOriginOptions] = useState<string[]>([]);
 
-  // A previously-picked origin can go stale the moment the stone type
-  // changes (e.g. "Tanzania" selected under Tanzanite, then switching to
-  // Sapphire) — silently filtering everything out otherwise.
+  // Origins are scoped to the selected stone type (a Sapphire buyer
+  // shouldn't see Tanzanite-only origins) — a live scoped query, since there
+  // is no longer a full client-side dataset to derive this from.
   useEffect(() => {
-    if (origin !== "all" && !originOptions.includes(origin)) {
-      setOrigin("all");
-    }
-  }, [origin, originOptions, setOrigin]);
+    let cancelled = false;
+    getOriginOptionsForType(stoneType).then((options) => {
+      if (cancelled) return;
+      setOriginOptions(options);
+      // A previously-picked origin can go stale the moment the stone type
+      // changes — silently filtering everything out otherwise.
+      if (origin !== "all" && !options.includes(origin)) {
+        setOrigin("all");
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- origin/setOrigin deliberately excluded: this only re-runs on stoneType change, not on every origin pick
+  }, [stoneType]);
 
   return (
     <aside className="flex h-full w-80 shrink-0 flex-col gap-7 overflow-y-auto border-r border-sidebar-border bg-sidebar px-6 py-7 text-sidebar-foreground">

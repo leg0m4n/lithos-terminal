@@ -1,17 +1,15 @@
 import { Badge } from "@/components/ui/badge";
 import { ActiveFiltersBar } from "@/components/dashboard/active-filters-bar";
 import { HistoricPriceChart } from "@/components/charts/historic-price-chart";
+import { TopSalesLeaderboard } from "@/components/dashboard/top-sales-leaderboard";
 import { GemstoneGrid } from "@/components/dashboard/gemstone-grid";
-import { getMarketData } from "@/lib/market-data";
 
 // Without this, Next prerenders "/" once at build time and every visitor
 // gets that frozen snapshot until the next deploy — not what "Live ·
 // Supabase" is supposed to mean.
 export const dynamic = "force-dynamic";
 
-export default async function DashboardPage() {
-  const { sales } = await getMarketData();
-
+export default function DashboardPage() {
   return (
     <div className="flex flex-col gap-7 p-10">
       <header className="flex flex-col gap-3">
@@ -27,9 +25,11 @@ export default async function DashboardPage() {
         <ActiveFiltersBar />
       </header>
 
-      <HistoricPriceChart sales={sales} />
+      <HistoricPriceChart />
 
-      <GemstoneGrid sales={sales} />
+      <TopSalesLeaderboard />
+
+      <GemstoneGrid />
     </div>
   );
 }
