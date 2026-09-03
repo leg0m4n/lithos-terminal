@@ -46,16 +46,23 @@ function useScopedOptions(
 
   useEffect(() => {
     let cancelled = false;
-    fetcher(stoneType).then((opts) => {
-      if (cancelled) return;
-      setOptions(opts);
-      // A previously-picked value can go stale the moment the stone type
-      // changes (e.g. "Tanzania" selected under Tanzanite, then switching
-      // to Sapphire) — silently filtering everything out otherwise.
-      if (value !== "all" && !opts.includes(value)) {
-        setValue("all");
-      }
-    });
+    fetcher(stoneType)
+      .then((opts) => {
+        if (cancelled) return;
+        setOptions(opts);
+        // A previously-picked value can go stale the moment the stone type
+        // changes (e.g. "Tanzania" selected under Tanzanite, then switching
+        // to Sapphire) — silently filtering everything out otherwise.
+        if (value !== "all" && !opts.includes(value)) {
+          setValue("all");
+        }
+      })
+      .catch(() => {
+        // Transient failure (DB timeout under write load, etc.) — leave the
+        // existing options/value alone rather than resetting to "all" based
+        // on no information. The dropdown just won't pick up new options
+        // until the next successful fetch.
+      });
     return () => {
       cancelled = true;
     };

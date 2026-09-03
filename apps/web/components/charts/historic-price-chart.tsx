@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ComponentType } from "react";
+import { useMemo, useState, type ComponentType } from "react";
 import EChartsReactImport, { type EChartsReactProps } from "echarts-for-react";
 import type { EChartsOption } from "echarts";
 import { Card } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { useFilters } from "@/lib/filter-context";
 import { cn } from "@/lib/utils";
-import { getHistoricPriceTrend, type TrendPoint } from "@/lib/market-data";
+import { getHistoricPriceTrend } from "@/lib/market-data";
+import { useAsyncData } from "@/lib/use-async-data";
 
 type ScaleType = "linear" | "log";
 
@@ -51,24 +53,19 @@ const monthFormatter = new Intl.DateTimeFormat("en-US", { year: "numeric", month
 export function HistoricPriceChart() {
   const { stoneType, origin, color, caratRange, priceRange, certifiedOnly } = useFilters();
   const [scaleType, setScaleType] = useState<ScaleType>("linear");
-  const [points, setPoints] = useState<TrendPoint[]>([]);
-  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    let cancelled = false;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-filter-change is the documented pattern for this (react.dev "Fetching data")
-    setLoading(true);
-    getHistoricPriceTrend({ stoneType, origin, color, caratRange, priceRange, certifiedOnly })
-      .then((data) => {
-        if (!cancelled) setPoints(data);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [stoneType, origin, color, caratRange, priceRange, certifiedOnly]);
+  const {
+    data: fetchedPoints,
+    loading,
+    error,
+    retry,
+  } = useAsyncData(
+    () => getHistoricPriceTrend({ stoneType, origin, color, caratRange, priceRange, certifiedOnly }),
+    [stoneType, origin, color, caratRange, priceRange, certifiedOnly]
+  );
+  // Stable reference when there's no data yet — `?? []` alone would mint a
+  // new array every render and defeat the useMemo below.
+  const points = useMemo(() => fetchedPoints ?? [], [fetchedPoints]);
 
   const totalTxns = useMemo(() => points.reduce((sum, p) => sum + p.txnCount, 0), [points]);
 
@@ -241,7 +238,14 @@ export function HistoricPriceChart() {
         <ScaleToggle value={scaleType} onChange={setScaleType} />
       </div>
       <ChartCaption blendedColors={color === "all"} />
-      {loading && points.length === 0 ? (
+      {error ? (
+        <div className="flex h-[460px] flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+          <span>Failed to load the trend — this is usually a transient database timeout.</span>
+          <Button variant="outline" size="sm" onClick={retry}>
+            Retry
+          </Button>
+        </div>
+      ) : loading && points.length === 0 ? (
         <div className="flex h-[460px] items-center justify-center text-sm text-muted-foreground">
           Loading trend…
         </div>

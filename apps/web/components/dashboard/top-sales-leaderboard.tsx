@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import Image from "next/image";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { useFilters } from "@/lib/filter-context";
-import { getTopPriceOutliers, type GemstoneSale } from "@/lib/market-data";
+import { getTopPriceOutliers } from "@/lib/market-data";
+import { useAsyncData } from "@/lib/use-async-data";
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -23,24 +24,16 @@ const dateFormatter = new Intl.DateTimeFormat("en-US", { year: "numeric", month:
 // hunting for a highlighted dot in a scatter.
 export function TopSalesLeaderboard() {
   const { stoneType, origin, color, caratRange, priceRange, certifiedOnly } = useFilters();
-  const [outliers, setOutliers] = useState<GemstoneSale[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-filter-change is the documented pattern for this (react.dev "Fetching data")
-    setLoading(true);
-    getTopPriceOutliers({ stoneType, origin, color, caratRange, priceRange, certifiedOnly })
-      .then((data) => {
-        if (!cancelled) setOutliers(data);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [stoneType, origin, color, caratRange, priceRange, certifiedOnly]);
+  const {
+    data: fetchedOutliers,
+    loading,
+    error,
+    retry,
+  } = useAsyncData(
+    () => getTopPriceOutliers({ stoneType, origin, color, caratRange, priceRange, certifiedOnly }),
+    [stoneType, origin, color, caratRange, priceRange, certifiedOnly]
+  );
+  const outliers = fetchedOutliers ?? [];
 
   return (
     <Card className="flex flex-col gap-4 p-6">
@@ -51,7 +44,14 @@ export function TopSalesLeaderboard() {
         </p>
       </div>
 
-      {loading && outliers.length === 0 ? (
+      {error ? (
+        <div className="flex h-32 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+          <span>Failed to load — this is usually a transient database timeout.</span>
+          <Button variant="outline" size="sm" onClick={retry}>
+            Retry
+          </Button>
+        </div>
+      ) : loading && outliers.length === 0 ? (
         <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">Loading…</div>
       ) : outliers.length === 0 ? (
         <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">

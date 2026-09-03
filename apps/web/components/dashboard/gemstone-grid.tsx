@@ -5,7 +5,8 @@ import Image from "next/image";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { useFilters } from "@/lib/filter-context";
-import { getSalesPage, GRID_PAGE_SIZE, type GemstoneSale } from "@/lib/market-data";
+import { getSalesPage, GRID_PAGE_SIZE } from "@/lib/market-data";
+import { useAsyncData } from "@/lib/use-async-data";
 
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
@@ -30,9 +31,6 @@ function sourceDomain(url: string): string {
 export function GemstoneGrid() {
   const { stoneType, origin, color, caratRange, priceRange, certifiedOnly } = useFilters();
   const [page, setPage] = useState(0);
-  const [listings, setListings] = useState<GemstoneSale[]>([]);
-  const [totalCount, setTotalCount] = useState(0);
-  const [loading, setLoading] = useState(true);
 
   // Any filter change should snap back to page 0 — staying on page 12 of a
   // now-much-smaller filtered set would just show an empty page.
@@ -41,23 +39,17 @@ export function GemstoneGrid() {
     setPage(0);
   }, [stoneType, origin, color, caratRange, priceRange, certifiedOnly]);
 
-  useEffect(() => {
-    let cancelled = false;
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- fetch-on-filter-change is the documented pattern for this (react.dev "Fetching data")
-    setLoading(true);
-    getSalesPage({ stoneType, origin, color, caratRange, priceRange, certifiedOnly }, page)
-      .then((result) => {
-        if (cancelled) return;
-        setListings(result.rows);
-        setTotalCount(result.totalCount);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [stoneType, origin, color, caratRange, priceRange, certifiedOnly, page]);
+  const {
+    data: result,
+    loading,
+    error,
+    retry,
+  } = useAsyncData(
+    () => getSalesPage({ stoneType, origin, color, caratRange, priceRange, certifiedOnly }, page),
+    [stoneType, origin, color, caratRange, priceRange, certifiedOnly, page]
+  );
+  const listings = result?.rows ?? [];
+  const totalCount = result?.totalCount ?? 0;
 
   const pageCount = Math.max(1, Math.ceil(totalCount / GRID_PAGE_SIZE));
 
@@ -106,7 +98,18 @@ export function GemstoneGrid() {
             </tr>
           </thead>
           <tbody>
-            {loading && listings.length === 0 ? (
+            {error ? (
+              <tr>
+                <td colSpan={6} className="py-8 text-center text-sm text-muted-foreground">
+                  <div className="flex flex-col items-center gap-3">
+                    <span>Failed to load — this is usually a transient database timeout.</span>
+                    <Button variant="outline" size="sm" onClick={retry}>
+                      Retry
+                    </Button>
+                  </div>
+                </td>
+              </tr>
+            ) : loading && listings.length === 0 ? (
               <tr>
                 <td colSpan={6} className="py-8 text-center text-sm text-muted-foreground">
                   Loading…

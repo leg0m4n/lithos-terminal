@@ -50,6 +50,17 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_gemstone_sales_stonetype_price
 -- confirmed live. Without a color filter, that composition shift alone
 -- produces a spurious "smaller stones cost more per carat" pattern in the
 -- blended trend that has nothing to do with actual size-based pricing.
+--
+-- The `metadata->>'raw_title' !~ '^[0-9]+\.[0-9]+\s*g\.'` clause excludes
+-- finished-jewelry listings ("2.69g. Natural ... Ring/Pendant/Earrings").
+-- Those titles state the TOTAL ITEM weight in grams (metal + stone), and
+-- the scraper is converting that through gem-weight math into weight_carats
+-- — confirmed live: 751 of 800 such titles have weight_carats == grams*5
+-- exactly, and 92% of those land at >=5ct, fabricating huge "cheap" stones
+-- that crater the 5-10ct/10ct+ buckets specifically (a $5 silver ring
+-- becomes a fake "15 carat" gemstone). This should ideally be fixed at the
+-- dredge-history source (don't parse a jewelry-piece's gram weight as
+-- carat weight); excluding here is a client-side mitigation, not a real fix.
 -- ============================================================
 
 DROP FUNCTION IF EXISTS historic_price_trend(text,text,numeric,numeric,numeric,numeric,boolean);
@@ -95,6 +106,7 @@ LANGUAGE sql STABLE AS $$
       AND sold_price_usd IS NOT NULL
       AND weight_carats IS NOT NULL AND weight_carats > 0
       AND weight_carats != 99
+      AND metadata->>'raw_title' !~ '^[0-9]+\.[0-9]+\s*g\.'
       AND auction_starts IS NOT NULL
       AND (p_stone_type IS NULL OR stone_type = p_stone_type)
       AND (p_origin IS NULL OR origin = p_origin)
@@ -151,6 +163,7 @@ LANGUAGE sql STABLE AS $$
     AND sold_price_usd IS NOT NULL
     AND weight_carats IS NOT NULL
     AND weight_carats != 99 -- see historic_price_trend: scraper's "hidden weight" placeholder
+    AND metadata->>'raw_title' !~ '^[0-9]+\.[0-9]+\s*g\.' -- see historic_price_trend: jewelry gram-weight placeholder
     AND auction_starts IS NOT NULL
     AND (p_stone_type IS NULL OR stone_type = p_stone_type)
     AND (p_origin IS NULL OR origin = p_origin)
@@ -203,6 +216,7 @@ LANGUAGE sql STABLE AS $$
     AND sold_price_usd IS NOT NULL
     AND weight_carats IS NOT NULL
     AND weight_carats != 99 -- see historic_price_trend: scraper's "hidden weight" placeholder
+    AND metadata->>'raw_title' !~ '^[0-9]+\.[0-9]+\s*g\.' -- see historic_price_trend: jewelry gram-weight placeholder
     AND (p_stone_type IS NULL OR stone_type = p_stone_type)
     AND (p_origin IS NULL OR origin = p_origin)
     AND (p_color IS NULL OR color_category = p_color)
