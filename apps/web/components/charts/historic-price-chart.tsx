@@ -23,7 +23,6 @@ const THEME = {
   axisLine: "rgba(255,255,255,0.18)",
   tooltipBg: "#25282b",
   tooltipBorder: "rgba(255,255,255,0.14)",
-  volumeBar: "rgba(155,159,163,0.5)",
 };
 
 // Fixed, never-cycled per weight tier — assigned in tier order so the same
@@ -51,7 +50,7 @@ const priceFormatter = new Intl.NumberFormat("en-US", {
 const monthFormatter = new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short" });
 
 export function HistoricPriceChart() {
-  const { stoneType, origin, color, caratRange, priceRange, certifiedOnly } = useFilters();
+  const { stoneType, origin, caratRange, priceRange, certifiedOnly } = useFilters();
   const [scaleType, setScaleType] = useState<ScaleType>("linear");
 
   const {
@@ -60,8 +59,8 @@ export function HistoricPriceChart() {
     error,
     retry,
   } = useAsyncData(
-    () => getHistoricPriceTrend({ stoneType, origin, color, caratRange, priceRange, certifiedOnly }),
-    [stoneType, origin, color, caratRange, priceRange, certifiedOnly]
+    () => getHistoricPriceTrend({ stoneType, origin, caratRange, priceRange, certifiedOnly }),
+    [stoneType, origin, caratRange, priceRange, certifiedOnly]
   );
   // Stable reference when there's no data yet — `?? []` alone would mint a
   // new array every render and defeat the useMemo below.
@@ -71,11 +70,6 @@ export function HistoricPriceChart() {
 
   const option = useMemo(() => {
     const months = [...new Set(points.map((p) => p.month))].sort();
-
-    const volumeByMonth = new Map<string, number>();
-    for (const p of points) {
-      volumeByMonth.set(p.month, (volumeByMonth.get(p.month) ?? 0) + p.txnCount);
-    }
 
     const lineSeries = TIER_ORDER.filter((tier) => points.some((p) => p.weightTier === tier)).map(
       (tier) => {
@@ -110,62 +104,40 @@ export function HistoricPriceChart() {
 
     const built: EChartsOption = {
       backgroundColor: "transparent",
-      grid: [
-        { left: 72, right: 24, top: 24, height: "52%" },
-        { left: 72, right: 24, top: "72%", height: "18%" },
-      ],
+      grid: { left: 72, right: 24, top: 32, bottom: 64 },
       // Category, not time: the data is already bucketed into discrete
       // calendar months, not a continuous stream of timestamps. A time axis
       // was auto-generating irregular day/week ticks that didn't line up
       // with the actual (monthly) data points, and made the crosshair show
       // a raw interpolated timestamp instead of a clean month label.
-      xAxis: [
-        {
-          type: "category",
-          data: months,
-          gridIndex: 0,
-          axisLine: { lineStyle: { color: THEME.axisLine } },
-          axisLabel: { show: false },
-          splitLine: { show: false },
+      xAxis: {
+        type: "category",
+        data: months,
+        axisLine: { lineStyle: { color: THEME.axisLine } },
+        axisLabel: {
+          color: THEME.mutedInk,
+          formatter: (v: string) => monthFormatter.format(new Date(v)),
+          hideOverlap: true,
         },
-        {
-          type: "category",
-          data: months,
-          gridIndex: 1,
-          axisLine: { lineStyle: { color: THEME.axisLine } },
-          axisLabel: { color: THEME.mutedInk, formatter: (v: string) => monthFormatter.format(new Date(v)) },
-          splitLine: { show: false },
-        },
-      ],
-      yAxis: [
-        {
-          type: scaleType === "log" ? "log" : "value",
-          min: scaleType === "log" ? undefined : 0,
-          gridIndex: 0,
-          name: "Median $/carat",
-          nameTextStyle: { color: THEME.mutedInk, align: "left" },
-          axisLabel: { color: THEME.mutedInk, formatter: (v: number) => `$${v}` },
-          axisLine: { show: false },
-          splitLine: { lineStyle: { color: THEME.gridline } },
-        },
-        {
-          type: "value",
-          gridIndex: 1,
-          name: "Sales",
-          nameTextStyle: { color: THEME.mutedInk, align: "left" },
-          axisLabel: { color: THEME.mutedInk },
-          axisLine: { show: false },
-          splitLine: { lineStyle: { color: THEME.gridline } },
-        },
-      ],
-      axisPointer: { link: [{ xAxisIndex: [0, 1] }] },
+        axisTick: { show: false },
+        splitLine: { show: false },
+      },
+      yAxis: {
+        type: scaleType === "log" ? "log" : "value",
+        min: scaleType === "log" ? undefined : 0,
+        name: "Median $/carat",
+        nameTextStyle: { color: THEME.mutedInk, align: "left" },
+        axisLabel: { color: THEME.mutedInk, formatter: (v: number) => `$${v}` },
+        axisLine: { show: false },
+        splitLine: { lineStyle: { color: THEME.gridline } },
+      },
       dataZoom: [
-        { type: "inside", xAxisIndex: [0, 1] },
+        { type: "inside", xAxisIndex: 0 },
         {
           type: "slider",
-          xAxisIndex: [0, 1],
+          xAxisIndex: 0,
           height: 16,
-          bottom: 4,
+          bottom: 8,
           borderColor: "transparent",
           backgroundColor: "rgba(255,255,255,0.03)",
           fillerColor: "rgba(221,176,73,0.18)",
@@ -208,17 +180,7 @@ export function HistoricPriceChart() {
           return `<div style="font-weight:600;margin-bottom:4px">${date}</div>${lines.join("")}`;
         },
       },
-      series: [
-        ...lineSeries,
-        {
-          type: "bar",
-          name: "Sales",
-          xAxisIndex: 1,
-          yAxisIndex: 1,
-          itemStyle: { color: THEME.volumeBar },
-          data: months.map((month) => volumeByMonth.get(month) ?? 0),
-        },
-      ],
+      series: lineSeries,
     };
 
     return built;
@@ -237,7 +199,7 @@ export function HistoricPriceChart() {
         </div>
         <ScaleToggle value={scaleType} onChange={setScaleType} />
       </div>
-      <ChartCaption blendedColors={color === "all"} />
+      <ChartCaption />
       {error ? (
         <div className="flex h-[460px] flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
           <span>Failed to load the trend — this is usually a transient database timeout.</span>
@@ -283,22 +245,21 @@ function ScaleToggle({ value, onChange }: { value: ScaleType; onChange: (v: Scal
   );
 }
 
-function ChartCaption({ blendedColors }: { blendedColors: boolean }) {
+function ChartCaption() {
   return (
     <div className="flex flex-col gap-2 border-y border-border/60 py-3 text-xs text-muted-foreground">
       <div className="flex flex-wrap items-center gap-4">
         <span>One line per weight tier — carat brackets, not raw price, so sizes are never compared directly.</span>
         <span>· Faint points = fewer than {LOW_CONFIDENCE_THRESHOLD} sales that month (noisy median)</span>
-        <span>· Bars below show sale volume per month</span>
+        <span>· Sale volume lives in its own Market Activity chart below</span>
       </div>
-      {blendedColors ? (
-        <div className="text-amber-500">
-          &ldquo;All Colors&rdquo; blends every variety together — a species can span a 10x+ price range by
-          color/variety alone (e.g. Demantoid vs. common Garnet), which can make a weight tier look mispriced
-          when it&rsquo;s really just a shifting color mix. Pick a specific Color in the sidebar for a clean
-          per-variety trend.
-        </div>
-      ) : null}
+      {/* Stated permanently, not as a fixable filter state: this is the real
+          precision ceiling of the dataset today. */}
+      <div>
+        Precise on size and time, deliberately general on quality: each point blends stones of very different
+        colour, clarity and cut, which for one species can span a 10x+ price range on its own. Read it as a
+        market-level trend, not a valuation for any individual stone.
+      </div>
     </div>
   );
 }

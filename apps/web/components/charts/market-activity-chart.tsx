@@ -57,7 +57,7 @@ function findPartialEdges(counts: number[]): boolean[] {
 }
 
 export function MarketActivityChart() {
-  const { stoneType, origin, color, caratRange, priceRange, certifiedOnly } = useFilters();
+  const { stoneType, origin, caratRange, priceRange, certifiedOnly } = useFilters();
   const [bucket, setBucket] = useState<TimeBucket>("month");
 
   const {
@@ -66,8 +66,8 @@ export function MarketActivityChart() {
     error,
     retry,
   } = useAsyncData(
-    () => getMarketActivity({ stoneType, origin, color, caratRange, priceRange, certifiedOnly }, bucket),
-    [stoneType, origin, color, caratRange, priceRange, certifiedOnly, bucket]
+    () => getMarketActivity({ stoneType, origin, caratRange, priceRange, certifiedOnly }, bucket),
+    [stoneType, origin, caratRange, priceRange, certifiedOnly, bucket]
   );
   const buckets = useMemo<ActivityBucket[]>(() => fetched ?? [], [fetched]);
 

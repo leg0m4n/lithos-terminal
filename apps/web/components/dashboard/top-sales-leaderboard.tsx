@@ -23,15 +23,15 @@ const dateFormatter = new Intl.DateTimeFormat("en-US", { year: "numeric", month:
 // with photos is also just more legible for "spot the exceptional sale" than
 // hunting for a highlighted dot in a scatter.
 export function TopSalesLeaderboard() {
-  const { stoneType, origin, color, caratRange, priceRange, certifiedOnly } = useFilters();
+  const { stoneType, origin, caratRange, priceRange, certifiedOnly } = useFilters();
   const {
     data: fetchedOutliers,
     loading,
     error,
     retry,
   } = useAsyncData(
-    () => getTopPriceOutliers({ stoneType, origin, color, caratRange, priceRange, certifiedOnly }),
-    [stoneType, origin, color, caratRange, priceRange, certifiedOnly]
+    () => getTopPriceOutliers({ stoneType, origin, caratRange, priceRange, certifiedOnly }),
+    [stoneType, origin, caratRange, priceRange, certifiedOnly]
   );
   const outliers = fetchedOutliers ?? [];
 

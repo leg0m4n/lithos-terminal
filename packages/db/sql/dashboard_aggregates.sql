@@ -63,6 +63,14 @@
 --   jewelry piece's gram weight as carat weight); excluding here is a
 --   mitigation, not a real fix.
 --
+-- 'multi_stone_parcel': wholesale melee/parcel listings — "1.50 mm Round 50
+--   pcs Sapphire, 1.00ct total, $17", "LOT Of Natural Pink Kunzite Gems",
+--   "(3 Stones)". weight_carats is the TOTAL across many stones, so $/carat
+--   describes a parcel's bulk economics and isn't comparable to a single
+--   stone of the same total weight. ~4,670 rows (~4.5% of sold).
+--   The piece-count pattern deliberately requires a count of 2 or more:
+--   "1 pcs" / "1 piece" listings are single stones and must stay in.
+--
 -- NOT self-maintaining: refresh_excluded_lots() must be re-run as the
 -- scraper adds rows, or newly-scraped junk silently re-enters the charts.
 -- ============================================================
@@ -74,7 +82,7 @@ CREATE TABLE IF NOT EXISTS gemstone_excluded_lots (
 
 -- NOTE: Postgres uses POSIX regex, where the word boundary is \y — NOT \b
 -- (which means backspace and silently matches nothing). A \b version of the
--- parcel probe below returned 0 rows instead of 4,443.
+-- parcel pattern returned 0 rows instead of 4,670.
 CREATE OR REPLACE FUNCTION refresh_excluded_lots()
 RETURNS bigint
 LANGUAGE sql AS $$
@@ -86,11 +94,14 @@ LANGUAGE sql AS $$
                THEN 'mystery_lot'
              WHEN metadata->>'raw_title' ~ '^[0-9]+\.[0-9]+\s*g\.'
                THEN 'finished_jewelry_gram_weight'
+             WHEN metadata->>'raw_title' ~* '(([2-9]|[1-9][0-9]+)\s*(pc|pcs|piece|pieces|stone|stones)\y|\ylot of\y|\yparcel\y)'
+               THEN 'multi_stone_parcel'
              ELSE 'placeholder_weight'
            END
     FROM gemstone_sales
     WHERE metadata->>'raw_title' ~* '(mystery|red or blue pill|behind the door|lucky dip|surprise (box|bag|lot))'
        OR metadata->>'raw_title' ~ '^[0-9]+\.[0-9]+\s*g\.'
+       OR metadata->>'raw_title' ~* '(([2-9]|[1-9][0-9]+)\s*(pc|pcs|piece|pieces|stone|stones)\y|\ylot of\y|\yparcel\y)'
        OR weight_carats = 99
     ON CONFLICT (source_url) DO NOTHING
     RETURNING 1
@@ -133,18 +144,20 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_gemstone_sales_stonetype_price
 -- (month, tier) bucket — never total-dollars-over-total-carats, which would
 -- let a month with more big stones in a bucket quietly skew the number.
 --
--- CAVEAT on p_color: color_category is a low-confidence scraped label, not
--- verified ground truth. It is exposed as a filter but should not be
--- mistaken for a real variety/quality classification — proper color
--- handling is planned via an ML encoder over listing photos.
+-- NO COLOR PARAMETER, deliberately. color_category is a keyword-guessed
+-- scraped label, not verified ground truth, so filtering on it produced
+-- false precision — it looked like it separated varieties while really just
+-- swapping one noisy signal for another. Colour is intentionally untouched
+-- until it can be derived properly (high-res images + a VLM/encoder). Do not
+-- re-add a color filter off this column.
 -- ============================================================
 
 DROP FUNCTION IF EXISTS historic_price_trend(text,text,numeric,numeric,numeric,numeric,boolean);
+DROP FUNCTION IF EXISTS historic_price_trend(text,text,text,numeric,numeric,numeric,numeric,boolean);
 
 CREATE OR REPLACE FUNCTION historic_price_trend(
   p_stone_type text DEFAULT NULL,
   p_origin text DEFAULT NULL,
-  p_color text DEFAULT NULL,
   p_min_carat numeric DEFAULT NULL,
   p_max_carat numeric DEFAULT NULL,
   p_min_price numeric DEFAULT NULL,
@@ -185,7 +198,6 @@ LANGUAGE sql STABLE AS $$
       AND NOT EXISTS (SELECT 1 FROM gemstone_excluded_lots e WHERE e.source_url = g.source_url)
       AND (p_stone_type IS NULL OR g.stone_type = p_stone_type)
       AND (p_origin IS NULL OR g.origin = p_origin)
-      AND (p_color IS NULL OR g.color_category = p_color)
       AND (p_min_carat IS NULL OR g.weight_carats >= p_min_carat)
       AND (p_max_carat IS NULL OR g.weight_carats <= p_max_carat)
       AND (p_min_price IS NULL OR g.sold_price_usd >= p_min_price)
@@ -201,7 +213,7 @@ LANGUAGE sql STABLE AS $$
   ORDER BY month, tier_order;
 $$;
 
-GRANT EXECUTE ON FUNCTION historic_price_trend(text,text,text,numeric,numeric,numeric,numeric,boolean) TO anon;
+GRANT EXECUTE ON FUNCTION historic_price_trend(text,text,numeric,numeric,numeric,numeric,boolean) TO anon;
 
 -- ============================================================
 -- market_activity — sale counts per time bucket, for the activity chart.
@@ -219,10 +231,11 @@ GRANT EXECUTE ON FUNCTION historic_price_trend(text,text,text,numeric,numeric,nu
 -- The chart component detects and visually marks these edges.
 -- ============================================================
 
+DROP FUNCTION IF EXISTS market_activity(text,text,text,numeric,numeric,numeric,numeric,boolean,text);
+
 CREATE OR REPLACE FUNCTION market_activity(
   p_stone_type text DEFAULT NULL,
   p_origin text DEFAULT NULL,
-  p_color text DEFAULT NULL,
   p_min_carat numeric DEFAULT NULL,
   p_max_carat numeric DEFAULT NULL,
   p_min_price numeric DEFAULT NULL,
@@ -246,7 +259,6 @@ LANGUAGE sql STABLE AS $$
     AND NOT EXISTS (SELECT 1 FROM gemstone_excluded_lots e WHERE e.source_url = g.source_url)
     AND (p_stone_type IS NULL OR g.stone_type = p_stone_type)
     AND (p_origin IS NULL OR g.origin = p_origin)
-    AND (p_color IS NULL OR g.color_category = p_color)
     AND (p_min_carat IS NULL OR g.weight_carats >= p_min_carat)
     AND (p_max_carat IS NULL OR g.weight_carats <= p_max_carat)
     AND (p_min_price IS NULL OR g.sold_price_usd >= p_min_price)
@@ -256,7 +268,7 @@ LANGUAGE sql STABLE AS $$
   ORDER BY 1;
 $$;
 
-GRANT EXECUTE ON FUNCTION market_activity(text,text,text,numeric,numeric,numeric,numeric,boolean,text) TO anon;
+GRANT EXECUTE ON FUNCTION market_activity(text,text,numeric,numeric,numeric,numeric,boolean,text) TO anon;
 
 -- ============================================================
 -- top_price_outliers — "most expensive sales" leaderboard.
@@ -270,11 +282,11 @@ GRANT EXECUTE ON FUNCTION market_activity(text,text,text,numeric,numeric,numeric
 -- ============================================================
 
 DROP FUNCTION IF EXISTS top_price_outliers(text,text,numeric,numeric,numeric,numeric,boolean,int);
+DROP FUNCTION IF EXISTS top_price_outliers(text,text,text,numeric,numeric,numeric,numeric,boolean,int);
 
 CREATE OR REPLACE FUNCTION top_price_outliers(
   p_stone_type text DEFAULT NULL,
   p_origin text DEFAULT NULL,
-  p_color text DEFAULT NULL,
   p_min_carat numeric DEFAULT NULL,
   p_max_carat numeric DEFAULT NULL,
   p_min_price numeric DEFAULT NULL,
@@ -299,7 +311,6 @@ LANGUAGE sql STABLE AS $$
       AND NOT EXISTS (SELECT 1 FROM gemstone_excluded_lots e WHERE e.source_url = g.source_url)
       AND (p_stone_type IS NULL OR g.stone_type = p_stone_type)
       AND (p_origin IS NULL OR g.origin = p_origin)
-      AND (p_color IS NULL OR g.color_category = p_color)
       AND (p_min_carat IS NULL OR g.weight_carats >= p_min_carat)
       AND (p_max_carat IS NULL OR g.weight_carats <= p_max_carat)
       AND (p_min_price IS NULL OR g.sold_price_usd >= p_min_price)
@@ -317,7 +328,7 @@ LANGUAGE sql STABLE AS $$
   ORDER BY g.sold_price_usd DESC;
 $$;
 
-GRANT EXECUTE ON FUNCTION top_price_outliers(text,text,text,numeric,numeric,numeric,numeric,boolean,int) TO anon;
+GRANT EXECUTE ON FUNCTION top_price_outliers(text,text,numeric,numeric,numeric,numeric,boolean,int) TO anon;
 
 -- ============================================================
 -- sales_page — server-side pagination for the listings grid.
@@ -332,11 +343,11 @@ GRANT EXECUTE ON FUNCTION top_price_outliers(text,text,text,numeric,numeric,nume
 -- ============================================================
 
 DROP FUNCTION IF EXISTS sales_page(text,text,numeric,numeric,numeric,numeric,boolean,int,int);
+DROP FUNCTION IF EXISTS sales_page(text,text,text,numeric,numeric,numeric,numeric,boolean,int,int);
 
 CREATE OR REPLACE FUNCTION sales_page(
   p_stone_type text DEFAULT NULL,
   p_origin text DEFAULT NULL,
-  p_color text DEFAULT NULL,
   p_min_carat numeric DEFAULT NULL,
   p_max_carat numeric DEFAULT NULL,
   p_min_price numeric DEFAULT NULL,
@@ -361,7 +372,6 @@ LANGUAGE sql STABLE AS $$
       AND NOT EXISTS (SELECT 1 FROM gemstone_excluded_lots e WHERE e.source_url = g.source_url)
       AND (p_stone_type IS NULL OR g.stone_type = p_stone_type)
       AND (p_origin IS NULL OR g.origin = p_origin)
-      AND (p_color IS NULL OR g.color_category = p_color)
       AND (p_min_carat IS NULL OR g.weight_carats >= p_min_carat)
       AND (p_max_carat IS NULL OR g.weight_carats <= p_max_carat)
       AND (p_min_price IS NULL OR g.sold_price_usd >= p_min_price)
@@ -385,13 +395,13 @@ LANGUAGE sql STABLE AS $$
   ORDER BY g.auction_starts DESC NULLS LAST;
 $$;
 
-GRANT EXECUTE ON FUNCTION sales_page(text,text,text,numeric,numeric,numeric,numeric,boolean,int,int) TO anon;
+GRANT EXECUTE ON FUNCTION sales_page(text,text,numeric,numeric,numeric,numeric,boolean,int,int) TO anon;
 
 -- ============================================================
--- stone_type_counts / origin_counts_for_type / color_counts_for_type — power
--- the left-nav stone type switcher and the Origin/Color dropdowns (each
--- scoped to the selected stone type). All apply the same exclusions as the
--- charts so the nav counts tie out with what the charts actually plot.
+-- stone_type_counts / origin_counts_for_type — power the left-nav stone type
+-- switcher and the Origin dropdown (scoped to the selected stone type). Both
+-- apply the same exclusions as the charts so the nav counts tie out with
+-- what the charts actually plot.
 -- ============================================================
 
 CREATE OR REPLACE FUNCTION stone_type_counts()
@@ -424,19 +434,6 @@ $$;
 
 GRANT EXECUTE ON FUNCTION origin_counts_for_type(text) TO anon;
 
-CREATE OR REPLACE FUNCTION color_counts_for_type(p_stone_type text DEFAULT NULL)
-RETURNS TABLE (color_category text, txn_count bigint)
-LANGUAGE sql STABLE AS $$
-  SELECT g.color_category, count(*) AS txn_count
-  FROM gemstone_sales g
-  WHERE g.sale_status = 'Sold'
-    AND g.color_category IS NOT NULL AND g.color_category != ''
-    AND NOT EXISTS (SELECT 1 FROM gemstone_excluded_lots e WHERE e.source_url = g.source_url)
-    AND (p_stone_type IS NULL OR g.stone_type = p_stone_type)
-  GROUP BY 1
-  ORDER BY 2 DESC;
-$$;
-
-GRANT EXECUTE ON FUNCTION color_counts_for_type(text) TO anon;
+DROP FUNCTION IF EXISTS color_counts_for_type(text);
 
 NOTIFY pgrst, 'reload schema';

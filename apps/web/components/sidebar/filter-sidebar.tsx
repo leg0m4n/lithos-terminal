@@ -23,19 +23,14 @@ import {
   PRICE_BRACKET_STOPS,
   useFilters,
 } from "@/lib/filter-context";
-import {
-  getColorOptionsForType,
-  getOriginOptionsForType,
-  type StoneTypeOption,
-} from "@/lib/market-data";
+import { getOriginOptionsForType, type StoneTypeOption } from "@/lib/market-data";
 
 interface FilterSidebarProps {
   stoneTypeOptions: StoneTypeOption[];
 }
 
-// Origin and Color are both "scoped to the selected stone type, live query,
-// reset if the current pick goes stale" — same shape, so shared here rather
-// than duplicating the effect twice.
+// Origin is scoped to the selected stone type: a live query that resets the
+// current pick if it goes stale when the stone type changes.
 function useScopedOptions(
   stoneType: string,
   value: string,
@@ -76,12 +71,10 @@ export function FilterSidebar({ stoneTypeOptions }: FilterSidebarProps) {
   const {
     stoneType,
     origin,
-    color,
     caratRange,
     priceRange,
     certifiedOnly,
     setOrigin,
-    setColor,
     setCaratRange,
     setPriceRange,
     setCertifiedOnly,
@@ -89,7 +82,6 @@ export function FilterSidebar({ stoneTypeOptions }: FilterSidebarProps) {
   } = useFilters();
 
   const originOptions = useScopedOptions(stoneType, origin, setOrigin, getOriginOptionsForType);
-  const colorOptions = useScopedOptions(stoneType, color, setColor, getColorOptionsForType);
 
   return (
     <aside className="flex h-full w-80 shrink-0 flex-col gap-7 overflow-y-auto border-r border-sidebar-border bg-sidebar px-6 py-7 text-sidebar-foreground">
@@ -119,25 +111,6 @@ export function FilterSidebar({ stoneTypeOptions }: FilterSidebarProps) {
           <SelectContent>
             <SelectItem value="all">All Origins</SelectItem>
             {originOptions.map((name) => (
-              <SelectItem key={name} value={name} className="text-base">
-                {name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-
-      <Separator className="bg-sidebar-border" />
-
-      <div className="flex flex-col gap-2.5">
-        <Label className="text-sm text-muted-foreground">Color</Label>
-        <Select value={color} onValueChange={setColor}>
-          <SelectTrigger className="h-10 w-full text-base">
-            <SelectValue placeholder="All Colors" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All Colors</SelectItem>
-            {colorOptions.map((name) => (
               <SelectItem key={name} value={name} className="text-base">
                 {name}
               </SelectItem>
