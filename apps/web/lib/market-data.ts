@@ -151,6 +151,36 @@ export async function getHistoricPriceTrend(filters: SaleFilters): Promise<Trend
   }));
 }
 
+export type TimeBucket = "month" | "day";
+
+export interface ActivityBucket {
+  bucket: string; // ISO timestamp, start of the bucket
+  saleCount: number;
+}
+
+interface ActivityBucketRow {
+  bucket: string;
+  sale_count: number;
+}
+
+// Sale counts per time bucket. Like the trend, this is a DB-side GROUP BY,
+// so the payload is one row per bucket regardless of table size.
+export async function getMarketActivity(
+  filters: SaleFilters,
+  bucket: TimeBucket
+): Promise<ActivityBucket[]> {
+  const { data, error } = await supabase.rpc("market_activity", {
+    ...toRpcParams(filters),
+    p_bucket: bucket,
+  });
+  if (error) throw new Error(`market_activity failed: ${error.message}`);
+
+  return (data as ActivityBucketRow[]).map((row) => ({
+    bucket: row.bucket,
+    saleCount: row.sale_count,
+  }));
+}
+
 const OUTLIER_LIMIT = 20;
 
 // "Most expensive sales" is a bounded top-N query (ORDER BY price DESC

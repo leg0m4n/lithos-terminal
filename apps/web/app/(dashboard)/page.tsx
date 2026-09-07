@@ -1,6 +1,7 @@
 import { Badge } from "@/components/ui/badge";
 import { ActiveFiltersBar } from "@/components/dashboard/active-filters-bar";
 import { HistoricPriceChart } from "@/components/charts/historic-price-chart";
+import { MarketActivityChart } from "@/components/charts/market-activity-chart";
 import { TopSalesLeaderboard } from "@/components/dashboard/top-sales-leaderboard";
 import { GemstoneGrid } from "@/components/dashboard/gemstone-grid";
 
@@ -26,6 +27,8 @@ export default function DashboardPage() {
       </header>
 
       <HistoricPriceChart />
+
+      <MarketActivityChart />
 
       <TopSalesLeaderboard />
 
