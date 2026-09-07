@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { useFilters } from "@/lib/filter-context";
 import { getPriceDistribution } from "@/lib/market-data";
 import { useAsyncData } from "@/lib/use-async-data";
+import { CompSetQuality } from "@/components/comps/comp-set-quality";
 
 const ReactECharts = EChartsReactImport as unknown as ComponentType<EChartsReactProps>;
 
@@ -39,7 +40,13 @@ function compactUsd(v: number): string {
 // model — it shows real transactions and lets the reader judge comparability
 // themselves, which is the honest thing to do while quality attributes
 // (colour, cut grade) remain underivable from the data we have.
-export function PriceDistributionChart() {
+interface PriceDistributionChartProps {
+  // Comps mode also wants a verdict on how trustworthy the set is; rendering
+  // it here reuses this component's single fetch instead of issuing a second.
+  showQuality?: boolean;
+}
+
+export function PriceDistributionChart({ showQuality = false }: PriceDistributionChartProps) {
   const { stoneType, origin, treatment, search, caratRange, priceRange, certifiedOnly } = useFilters();
 
   const { data, loading, error, retry } = useAsyncData(
@@ -144,6 +151,8 @@ export function PriceDistributionChart() {
             : "What matching stones actually sold for"}
         </p>
       </div>
+
+      {data && showQuality ? <CompSetQuality n={data.totalCount} p25={data.p25} p75={data.p75} /> : null}
 
       {data ? (
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
