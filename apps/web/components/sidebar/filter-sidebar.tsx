@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { BadgeCheck } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { BadgeCheck, Search } from "lucide-react";
+import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import {
@@ -23,7 +24,16 @@ import {
   PRICE_BRACKET_STOPS,
   useFilters,
 } from "@/lib/filter-context";
-import { getOriginOptionsForType, type StoneTypeOption } from "@/lib/market-data";
+import {
+  getOriginOptionsForType,
+  getStoneTypeOptions,
+  getTreatmentOptionsForType,
+  type StoneTypeOption,
+} from "@/lib/market-data";
+
+// Typing fires queries in five components at once, so the input stays local
+// and only pushes to shared filter state once you pause.
+const SEARCH_DEBOUNCE_MS = 300;
 
 interface FilterSidebarProps {
   stoneTypeOptions: StoneTypeOption[];
@@ -71,10 +81,15 @@ export function FilterSidebar({ stoneTypeOptions }: FilterSidebarProps) {
   const {
     stoneType,
     origin,
+    treatment,
+    search,
     caratRange,
     priceRange,
     certifiedOnly,
+    setStoneType,
     setOrigin,
+    setTreatment,
+    setSearch,
     setCaratRange,
     setPriceRange,
     setCertifiedOnly,
@@ -82,6 +97,49 @@ export function FilterSidebar({ stoneTypeOptions }: FilterSidebarProps) {
   } = useFilters();
 
   const originOptions = useScopedOptions(stoneType, origin, setOrigin, getOriginOptionsForType);
+  const treatmentOptions = useScopedOptions(stoneType, treatment, setTreatment, getTreatmentOptionsForType);
+
+  // Local mirror of the search box so typing stays responsive; the shared
+  // (query-firing, URL-syncing) value updates on a debounce.
+  const [searchInput, setSearchInput] = useState(search);
+  useEffect(() => {
+    if (searchInput === search) return;
+    const t = setTimeout(() => setSearch(searchInput), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- intentionally keyed on the typed value only
+  }, [searchInput]);
+
+  // The species list is server-rendered for first paint, then re-queried as
+  // the search changes so each species shows how many hits it holds.
+  const [typeOptions, setTypeOptions] = useState(stoneTypeOptions);
+  const didMount = useRef(false);
+  useEffect(() => {
+    if (!didMount.current) {
+      didMount.current = true;
+      return; // server already gave us the unsearched list
+    }
+    let cancelled = false;
+    getStoneTypeOptions(search)
+      .then((opts) => {
+        if (cancelled) return;
+        setTypeOptions(opts);
+        // Species is always constrained, so a search that has no hits in the
+        // current species would silently show nothing. Jump to the species
+        // that actually contains the term.
+        if (opts.length > 0 && !opts.some((o) => o.value === stoneType)) {
+          setStoneType(opts[0].value);
+        }
+      })
+      .catch(() => {
+        /* transient — keep the last good list rather than blanking the nav */
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- stoneType intentionally excluded: only a search change should re-scope the list
+  }, [search]);
+
+  const totalStones = typeOptions.reduce((sum, o) => sum + o.count, 0);
 
   return (
     <aside className="flex h-full w-80 shrink-0 flex-col gap-7 overflow-y-auto border-r border-sidebar-border bg-sidebar px-6 py-7 text-sidebar-foreground">
@@ -89,7 +147,33 @@ export function FilterSidebar({ stoneTypeOptions }: FilterSidebarProps) {
 
       <Separator className="bg-sidebar-border" />
 
-      <StoneTypeNav options={stoneTypeOptions} />
+      {/* Search + corpus size on one row: the search is the entry point to
+          comparable-sales lookup, and the count tells you how deep the
+          evidence base behind it currently is. */}
+      <div className="flex flex-col gap-2">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            placeholder="Search sales…"
+            aria-label="Search comparable sales by title"
+            className="h-10 pl-8 text-base"
+          />
+        </div>
+        <div className="flex items-baseline justify-between px-0.5">
+          <span className="text-xs text-muted-foreground">
+            {search.trim() ? "matching sales" : "sales on record"}
+          </span>
+          <span className="text-sm font-medium tabular-nums text-foreground">
+            {totalStones.toLocaleString()}
+          </span>
+        </div>
+      </div>
+
+      <Separator className="bg-sidebar-border" />
+
+      <StoneTypeNav options={typeOptions} />
 
       <Separator className="bg-sidebar-border" />
 
@@ -97,7 +181,7 @@ export function FilterSidebar({ stoneTypeOptions }: FilterSidebarProps) {
         <h2 className="text-sm font-semibold tracking-[0.2em] text-muted-foreground">
           FILTERS
         </h2>
-        <Button variant="ghost" size="sm" onClick={resetFilters} className="h-7 px-2 text-sm">
+        <Button variant="ghost" size="sm" onClick={() => { setSearchInput(""); resetFilters(); }} className="h-7 px-2 text-sm">
           Reset
         </Button>
       </div>
@@ -117,6 +201,27 @@ export function FilterSidebar({ stoneTypeOptions }: FilterSidebarProps) {
             ))}
           </SelectContent>
         </Select>
+      </div>
+
+      <div className="flex flex-col gap-2.5">
+        <Label className="text-sm text-muted-foreground">Treatment</Label>
+        <Select value={treatment} onValueChange={setTreatment}>
+          <SelectTrigger className="h-10 w-full text-base">
+            <SelectValue placeholder="Any Treatment" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">Any Treatment</SelectItem>
+            {treatmentOptions.map((name) => (
+              <SelectItem key={name} value={name} className="text-base">
+                {name}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {/* Not a verified attribute: ~78% of listings say "No Treatment",
+            which is usually an unstated seller default rather than a lab
+            finding. Useful to narrow comps, not evidence of anything. */}
+        <p className="text-xs text-muted-foreground">Seller-stated, not independently verified.</p>
       </div>
 
       <Separator className="bg-sidebar-border" />

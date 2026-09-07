@@ -110,17 +110,56 @@ LANGUAGE sql AS $$
 $$;
 
 -- ============================================================
+-- gemstone_search — narrow (source_url, title) mirror, purely so text
+-- search never touches the wide JSONB.
+--
+-- raw_title lives inside metadata, so searching it directly means detoasting
+-- a large blob per candidate row. Measured: a naive ILIKE over
+-- metadata->>'raw_title' was 16.3s. Adding a GIN trigram index straight onto
+-- that expression fixed *narrow* terms (0.4s) but NOT broad ones — 'blue'
+-- matches 13k rows and the index recheck detoasted every one, still 14s.
+-- Mirroring the title into this narrow table drops the same query to 0.39s,
+-- because the recheck reads a skinny row instead of a JSONB blob.
+--
+-- Like gemstone_excluded_lots this is NOT self-maintaining:
+-- refresh_search_index() must be re-run as the scraper adds rows, or new
+-- listings simply won't be findable by text search.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS gemstone_search (
+  source_url text PRIMARY KEY,
+  title text NOT NULL
+);
+
+CREATE OR REPLACE FUNCTION refresh_search_index()
+RETURNS bigint LANGUAGE sql AS $$
+  WITH ins AS (
+    INSERT INTO gemstone_search (source_url, title)
+    SELECT source_url, metadata->>'raw_title'
+    FROM gemstone_sales
+    WHERE metadata->>'raw_title' IS NOT NULL
+    ON CONFLICT (source_url) DO NOTHING
+    RETURNING 1
+  )
+  SELECT count(*) FROM ins;
+$$;
+
+-- ============================================================
 -- Indexes
 -- ============================================================
 
--- The one that matters: covering index over the narrow analytical columns
--- so the dashboard's aggregates run as index-only scans and never read the
--- wide JSONB heap. See the performance note above.
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+
+-- The one that matters for aggregates: covering index over the narrow
+-- analytical columns so the dashboard never reads the wide JSONB heap.
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_gs_analytics
   ON gemstone_sales (auction_starts)
   INCLUDE (source_url, stone_type, sold_price_usd, weight_carats,
-           color_category, origin, is_certified)
+           color_category, origin, is_certified, treatment_status)
   WHERE sale_status = 'Sold';
+
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_gemstone_search_title_trgm
+  ON gemstone_search USING gin (title gin_trgm_ops);
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_gemstone_sales_auction_starts
   ON gemstone_sales (auction_starts);
@@ -134,22 +173,34 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_gemstone_sales_stonetype_price
   WHERE sale_status = 'Sold';
 
 -- ============================================================
--- historic_price_trend — powers the trend chart.
+-- SHARED FILTER CONTRACT
 --
--- Weight-tier edges match CARAT_BRACKET_STOPS in
--- apps/web/lib/filter-context.tsx (0, 1, 3, 5, 10, 16) — keep in sync if
--- that constant ever changes.
+-- Every function below takes the same filter set, in the same order:
+--   p_stone_type, p_origin, p_treatment, p_search,
+--   p_min_carat, p_max_carat, p_min_price, p_max_price, p_certified_only
 --
--- Price-per-carat is computed PER SALE first, then median'd within each
--- (month, tier) bucket — never total-dollars-over-total-carats, which would
--- let a month with more big stones in a bucket quietly skew the number.
+-- Search is always expressed as a `hits` CTE plus an EXISTS, never as
+-- `(p_search IS NULL OR title ILIKE ...)` inline. That is not stylistic: a
+-- top-level OR against a *parameter* forces a generic plan that can neither
+-- use the trigram index nor fold the predicate away, which measured 17s.
+-- The CTE form is 0.24-0.5s whether or not a search is active.
 --
 -- NO COLOR PARAMETER, deliberately. color_category is a keyword-guessed
--- scraped label, not verified ground truth, so filtering on it produced
--- false precision — it looked like it separated varieties while really just
--- swapping one noisy signal for another. Colour is intentionally untouched
--- until it can be derived properly (high-res images + a VLM/encoder). Do not
--- re-add a color filter off this column.
+-- label, not verified ground truth, so filtering on it produced false
+-- precision. Colour stays untouched until it can be derived properly from
+-- high-res images via a VLM/encoder. Do not re-add a filter off that column.
+--
+-- CAVEAT on p_treatment: treatment_status is ~98% populated but 78% of rows
+-- say "No Treatment", which in gem listings is usually an unstated default
+-- rather than an independently verified claim. Fine for narrowing comps;
+-- do not present it as proof a stone is untreated.
+-- ============================================================
+
+-- ============================================================
+-- historic_price_trend — median $/carat per (month x weight tier).
+-- Weight-tier edges match CARAT_BRACKET_STOPS in filter-context.tsx.
+-- Price-per-carat is computed PER SALE then median'd — never
+-- total-dollars-over-total-carats.
 -- ============================================================
 
 DROP FUNCTION IF EXISTS historic_price_trend(text,text,numeric,numeric,numeric,numeric,boolean);
@@ -158,6 +209,8 @@ DROP FUNCTION IF EXISTS historic_price_trend(text,text,text,numeric,numeric,nume
 CREATE OR REPLACE FUNCTION historic_price_trend(
   p_stone_type text DEFAULT NULL,
   p_origin text DEFAULT NULL,
+  p_treatment text DEFAULT NULL,
+  p_search text DEFAULT NULL,
   p_min_carat numeric DEFAULT NULL,
   p_max_carat numeric DEFAULT NULL,
   p_min_price numeric DEFAULT NULL,
@@ -165,14 +218,15 @@ CREATE OR REPLACE FUNCTION historic_price_trend(
   p_certified_only boolean DEFAULT false
 )
 RETURNS TABLE (
-  month timestamptz,
-  weight_tier text,
-  tier_order int,
-  median_price_per_carat numeric,
-  txn_count bigint
+  month timestamptz, weight_tier text, tier_order int,
+  median_price_per_carat numeric, txn_count bigint
 )
 LANGUAGE sql STABLE AS $$
-  WITH filtered AS (
+  WITH hits AS (
+    SELECT source_url FROM gemstone_search
+    WHERE p_search IS NOT NULL AND title ILIKE '%' || p_search || '%'
+  ),
+  filtered AS (
     SELECT
       date_trunc('month', g.auction_starts) AS month,
       g.sold_price_usd / g.weight_carats AS price_per_carat,
@@ -198,14 +252,15 @@ LANGUAGE sql STABLE AS $$
       AND NOT EXISTS (SELECT 1 FROM gemstone_excluded_lots e WHERE e.source_url = g.source_url)
       AND (p_stone_type IS NULL OR g.stone_type = p_stone_type)
       AND (p_origin IS NULL OR g.origin = p_origin)
+      AND (p_treatment IS NULL OR g.treatment_status = p_treatment)
       AND (p_min_carat IS NULL OR g.weight_carats >= p_min_carat)
       AND (p_max_carat IS NULL OR g.weight_carats <= p_max_carat)
       AND (p_min_price IS NULL OR g.sold_price_usd >= p_min_price)
       AND (p_max_price IS NULL OR g.sold_price_usd <= p_max_price)
       AND (NOT p_certified_only OR g.is_certified = true)
+      AND (p_search IS NULL OR EXISTS (SELECT 1 FROM hits h WHERE h.source_url = g.source_url))
   )
-  SELECT
-    month, weight_tier, tier_order,
+  SELECT month, weight_tier, tier_order,
     percentile_cont(0.5) WITHIN GROUP (ORDER BY price_per_carat) AS median_price_per_carat,
     count(*) AS txn_count
   FROM filtered
@@ -213,29 +268,27 @@ LANGUAGE sql STABLE AS $$
   ORDER BY month, tier_order;
 $$;
 
-GRANT EXECUTE ON FUNCTION historic_price_trend(text,text,numeric,numeric,numeric,numeric,boolean) TO anon;
+GRANT EXECUTE ON FUNCTION historic_price_trend(text,text,text,text,numeric,numeric,numeric,numeric,boolean) TO anon;
 
 -- ============================================================
--- market_activity — sale counts per time bucket, for the activity chart.
+-- market_activity — sale counts per time bucket.
 -- p_bucket is clamped rather than interpolated: date_trunc throws on an
 -- unknown unit, and an unexpected value shouldn't error the page.
 --
--- NOTE for consumers: buckets at the START and END of the returned range
--- are usually PARTIAL, and that is a scrape-coverage artifact rather than
--- real market movement. dredge-history sweeps the site's product-ID space
--- backwards from a start_id that sits ~60 days below the live ceiling, so
--- the newest window is deliberately unswept and the oldest window is
--- wherever the sweep has currently reached. Confirmed live: monthly counts
--- ran ~19-23K/month for Mar-Jun 2026, then 11K for Jul and 21 for Aug —
--- the July/August collapse is the unswept buffer, not a market crash.
--- The chart component detects and visually marks these edges.
+-- NOTE for consumers: buckets at the START and END of the range are usually
+-- PARTIAL — a scrape-coverage artifact, not real market movement.
+-- dredge-history sweeps backwards from a start_id ~60 days below the live
+-- ceiling. The chart component detects and greys those edges.
 -- ============================================================
 
+DROP FUNCTION IF EXISTS market_activity(text,text,numeric,numeric,numeric,numeric,boolean,text);
 DROP FUNCTION IF EXISTS market_activity(text,text,text,numeric,numeric,numeric,numeric,boolean,text);
 
 CREATE OR REPLACE FUNCTION market_activity(
   p_stone_type text DEFAULT NULL,
   p_origin text DEFAULT NULL,
+  p_treatment text DEFAULT NULL,
+  p_search text DEFAULT NULL,
   p_min_carat numeric DEFAULT NULL,
   p_max_carat numeric DEFAULT NULL,
   p_min_price numeric DEFAULT NULL,
@@ -245,6 +298,10 @@ CREATE OR REPLACE FUNCTION market_activity(
 )
 RETURNS TABLE (bucket timestamptz, sale_count bigint)
 LANGUAGE sql STABLE AS $$
+  WITH hits AS (
+    SELECT source_url FROM gemstone_search
+    WHERE p_search IS NOT NULL AND title ILIKE '%' || p_search || '%'
+  )
   SELECT
     date_trunc(
       CASE WHEN p_bucket IN ('day', 'week', 'month') THEN p_bucket ELSE 'month' END,
@@ -259,26 +316,112 @@ LANGUAGE sql STABLE AS $$
     AND NOT EXISTS (SELECT 1 FROM gemstone_excluded_lots e WHERE e.source_url = g.source_url)
     AND (p_stone_type IS NULL OR g.stone_type = p_stone_type)
     AND (p_origin IS NULL OR g.origin = p_origin)
+    AND (p_treatment IS NULL OR g.treatment_status = p_treatment)
     AND (p_min_carat IS NULL OR g.weight_carats >= p_min_carat)
     AND (p_max_carat IS NULL OR g.weight_carats <= p_max_carat)
     AND (p_min_price IS NULL OR g.sold_price_usd >= p_min_price)
     AND (p_max_price IS NULL OR g.sold_price_usd <= p_max_price)
     AND (NOT p_certified_only OR g.is_certified = true)
+    AND (p_search IS NULL OR EXISTS (SELECT 1 FROM hits h WHERE h.source_url = g.source_url))
   GROUP BY 1
   ORDER BY 1;
 $$;
 
-GRANT EXECUTE ON FUNCTION market_activity(text,text,numeric,numeric,numeric,numeric,boolean,text) TO anon;
+GRANT EXECUTE ON FUNCTION market_activity(text,text,text,text,numeric,numeric,numeric,numeric,boolean,text) TO anon;
+
+-- ============================================================
+-- price_distribution — the comps panel: how much did matching stones
+-- actually sell for?
+--
+-- Bins are equal-width in LOG space, because sold prices span ~$2 to
+-- ~$75,000 and linear bins would pile ~everything into bin 1. Empty bins are
+-- emitted too (via generate_series) so the histogram stays continuous rather
+-- than silently collapsing gaps.
+--
+-- Summary stats (n / p25 / median / p75 / min / max / median $ per carat) are
+-- repeated on every row so the whole panel is one round trip.
+-- ============================================================
+
+CREATE OR REPLACE FUNCTION price_distribution(
+  p_stone_type text DEFAULT NULL,
+  p_origin text DEFAULT NULL,
+  p_treatment text DEFAULT NULL,
+  p_search text DEFAULT NULL,
+  p_min_carat numeric DEFAULT NULL,
+  p_max_carat numeric DEFAULT NULL,
+  p_min_price numeric DEFAULT NULL,
+  p_max_price numeric DEFAULT NULL,
+  p_certified_only boolean DEFAULT false,
+  p_bins int DEFAULT 24
+)
+RETURNS TABLE (
+  bin_index int, bin_low numeric, bin_high numeric, sale_count bigint,
+  total_count bigint, p25 numeric, p50 numeric, p75 numeric,
+  min_price numeric, max_price numeric, median_price_per_carat numeric
+)
+LANGUAGE sql STABLE AS $$
+  WITH hits AS (
+    SELECT source_url FROM gemstone_search
+    WHERE p_search IS NOT NULL AND title ILIKE '%' || p_search || '%'
+  ),
+  filtered AS (
+    SELECT g.sold_price_usd AS price, g.sold_price_usd / g.weight_carats AS ppc
+    FROM gemstone_sales g
+    WHERE g.sale_status = 'Sold'
+      AND g.sold_price_usd IS NOT NULL AND g.sold_price_usd > 0
+      AND g.weight_carats IS NOT NULL AND g.weight_carats > 0
+      AND NOT EXISTS (SELECT 1 FROM gemstone_excluded_lots e WHERE e.source_url = g.source_url)
+      AND (p_stone_type IS NULL OR g.stone_type = p_stone_type)
+      AND (p_origin IS NULL OR g.origin = p_origin)
+      AND (p_treatment IS NULL OR g.treatment_status = p_treatment)
+      AND (p_min_carat IS NULL OR g.weight_carats >= p_min_carat)
+      AND (p_max_carat IS NULL OR g.weight_carats <= p_max_carat)
+      AND (p_min_price IS NULL OR g.sold_price_usd >= p_min_price)
+      AND (p_max_price IS NULL OR g.sold_price_usd <= p_max_price)
+      AND (NOT p_certified_only OR g.is_certified = true)
+      AND (p_search IS NULL OR EXISTS (SELECT 1 FROM hits h WHERE h.source_url = g.source_url))
+  ),
+  stats AS (
+    SELECT count(*) AS n, min(price) AS mn, max(price) AS mx,
+      percentile_cont(0.25) WITHIN GROUP (ORDER BY price) AS q25,
+      percentile_cont(0.50) WITHIN GROUP (ORDER BY price) AS q50,
+      percentile_cont(0.75) WITHIN GROUP (ORDER BY price) AS q75,
+      percentile_cont(0.50) WITHIN GROUP (ORDER BY ppc) AS mppc
+    FROM filtered
+  ),
+  binned AS (
+    SELECT least(
+             width_bucket(ln(f.price::double precision),
+                          ln(s.mn::double precision),
+                          ln(s.mx::double precision), p_bins),
+             p_bins) AS bi,
+           count(*) AS c
+    FROM filtered f CROSS JOIN stats s
+    WHERE s.mx > s.mn
+    GROUP BY 1
+  )
+  SELECT
+    i AS bin_index,
+    round(exp(ln(s.mn::double precision) + (i - 1) * (ln(s.mx::double precision) - ln(s.mn::double precision)) / p_bins)::numeric, 2) AS bin_low,
+    round(exp(ln(s.mn::double precision) + i * (ln(s.mx::double precision) - ln(s.mn::double precision)) / p_bins)::numeric, 2) AS bin_high,
+    coalesce(b.c, 0) AS sale_count,
+    s.n AS total_count, s.q25 AS p25, s.q50 AS p50, s.q75 AS p75,
+    s.mn AS min_price, s.mx AS max_price, s.mppc AS median_price_per_carat
+  FROM generate_series(1, p_bins) AS i
+  CROSS JOIN stats s
+  LEFT JOIN binned b ON b.bi = i
+  WHERE s.n > 0 AND s.mx > s.mn
+  ORDER BY i;
+$$;
+
+GRANT EXECUTE ON FUNCTION price_distribution(text,text,text,text,numeric,numeric,numeric,numeric,boolean,int) TO anon;
 
 -- ============================================================
 -- top_price_outliers — "most expensive sales" leaderboard.
 --
 -- Two-phase on purpose. The selected columns include image_urls (wide
 -- JSONB), so selecting them before the LIMIT would make Postgres detoast
--- every matching row just to throw all but p_limit away — that alone pushed
--- this over the statement timeout. The inner query stays narrow enough to
--- run as an index-only scan against idx_gs_analytics; only the surviving
--- p_limit rows are joined back to the heap for their full payload.
+-- every matching row just to throw all but p_limit away.
 -- ============================================================
 
 DROP FUNCTION IF EXISTS top_price_outliers(text,text,numeric,numeric,numeric,numeric,boolean,int);
@@ -287,6 +430,8 @@ DROP FUNCTION IF EXISTS top_price_outliers(text,text,text,numeric,numeric,numeri
 CREATE OR REPLACE FUNCTION top_price_outliers(
   p_stone_type text DEFAULT NULL,
   p_origin text DEFAULT NULL,
+  p_treatment text DEFAULT NULL,
+  p_search text DEFAULT NULL,
   p_min_carat numeric DEFAULT NULL,
   p_max_carat numeric DEFAULT NULL,
   p_min_price numeric DEFAULT NULL,
@@ -301,7 +446,11 @@ RETURNS TABLE (
   image_urls jsonb
 )
 LANGUAGE sql STABLE AS $$
-  WITH top AS (
+  WITH hits AS (
+    SELECT source_url FROM gemstone_search
+    WHERE p_search IS NOT NULL AND title ILIKE '%' || p_search || '%'
+  ),
+  top AS (
     SELECT g.source_url
     FROM gemstone_sales g
     WHERE g.sale_status = 'Sold'
@@ -311,11 +460,13 @@ LANGUAGE sql STABLE AS $$
       AND NOT EXISTS (SELECT 1 FROM gemstone_excluded_lots e WHERE e.source_url = g.source_url)
       AND (p_stone_type IS NULL OR g.stone_type = p_stone_type)
       AND (p_origin IS NULL OR g.origin = p_origin)
+      AND (p_treatment IS NULL OR g.treatment_status = p_treatment)
       AND (p_min_carat IS NULL OR g.weight_carats >= p_min_carat)
       AND (p_max_carat IS NULL OR g.weight_carats <= p_max_carat)
       AND (p_min_price IS NULL OR g.sold_price_usd >= p_min_price)
       AND (p_max_price IS NULL OR g.sold_price_usd <= p_max_price)
       AND (NOT p_certified_only OR g.is_certified = true)
+      AND (p_search IS NULL OR EXISTS (SELECT 1 FROM hits h WHERE h.source_url = g.source_url))
     ORDER BY g.sold_price_usd DESC
     LIMIT p_limit
   )
@@ -328,18 +479,15 @@ LANGUAGE sql STABLE AS $$
   ORDER BY g.sold_price_usd DESC;
 $$;
 
-GRANT EXECUTE ON FUNCTION top_price_outliers(text,text,numeric,numeric,numeric,numeric,boolean,int) TO anon;
+GRANT EXECUTE ON FUNCTION top_price_outliers(text,text,text,text,numeric,numeric,numeric,numeric,boolean,int) TO anon;
 
 -- ============================================================
--- sales_page — server-side pagination for the listings grid.
+-- sales_page — server-side pagination for the matched-sales table.
 --
--- Same two-phase shape as top_price_outliers, for a sharper version of the
--- same problem: `count(*) OVER()` cannot be computed without materialising
--- the entire filtered result set, so pairing it with a wide SELECT list made
--- every page request detoast image_urls for all ~96K matching rows to return
--- 50. Here the narrow CTE does both jobs from the covering index — it is
--- counted for total_count and sliced for the page — and only the 50 rows on
--- the page are joined back for their full payload.
+-- Same two-phase shape, for a sharper version of the same problem:
+-- count(*) OVER() cannot be computed without materialising the entire
+-- filtered result set, so pairing it with a wide SELECT list made every page
+-- request detoast image_urls for all matching rows to return 50.
 -- ============================================================
 
 DROP FUNCTION IF EXISTS sales_page(text,text,numeric,numeric,numeric,numeric,boolean,int,int);
@@ -348,6 +496,8 @@ DROP FUNCTION IF EXISTS sales_page(text,text,text,numeric,numeric,numeric,numeri
 CREATE OR REPLACE FUNCTION sales_page(
   p_stone_type text DEFAULT NULL,
   p_origin text DEFAULT NULL,
+  p_treatment text DEFAULT NULL,
+  p_search text DEFAULT NULL,
   p_min_carat numeric DEFAULT NULL,
   p_max_carat numeric DEFAULT NULL,
   p_min_price numeric DEFAULT NULL,
@@ -363,7 +513,11 @@ RETURNS TABLE (
   image_urls jsonb, total_count bigint
 )
 LANGUAGE sql STABLE AS $$
-  WITH filtered AS (
+  WITH hits AS (
+    SELECT source_url FROM gemstone_search
+    WHERE p_search IS NOT NULL AND title ILIKE '%' || p_search || '%'
+  ),
+  filtered AS (
     SELECT g.source_url, g.auction_starts
     FROM gemstone_sales g
     WHERE g.sale_status = 'Sold'
@@ -372,11 +526,13 @@ LANGUAGE sql STABLE AS $$
       AND NOT EXISTS (SELECT 1 FROM gemstone_excluded_lots e WHERE e.source_url = g.source_url)
       AND (p_stone_type IS NULL OR g.stone_type = p_stone_type)
       AND (p_origin IS NULL OR g.origin = p_origin)
+      AND (p_treatment IS NULL OR g.treatment_status = p_treatment)
       AND (p_min_carat IS NULL OR g.weight_carats >= p_min_carat)
       AND (p_max_carat IS NULL OR g.weight_carats <= p_max_carat)
       AND (p_min_price IS NULL OR g.sold_price_usd >= p_min_price)
       AND (p_max_price IS NULL OR g.sold_price_usd <= p_max_price)
       AND (NOT p_certified_only OR g.is_certified = true)
+      AND (p_search IS NULL OR EXISTS (SELECT 1 FROM hits h WHERE h.source_url = g.source_url))
   ),
   total AS (SELECT count(*) AS c FROM filtered),
   page AS (
@@ -395,29 +551,36 @@ LANGUAGE sql STABLE AS $$
   ORDER BY g.auction_starts DESC NULLS LAST;
 $$;
 
-GRANT EXECUTE ON FUNCTION sales_page(text,text,numeric,numeric,numeric,numeric,boolean,int,int) TO anon;
+GRANT EXECUTE ON FUNCTION sales_page(text,text,text,text,numeric,numeric,numeric,numeric,boolean,int,int) TO anon;
 
 -- ============================================================
--- stone_type_counts / origin_counts_for_type — power the left-nav stone type
--- switcher and the Origin dropdown (scoped to the selected stone type). Both
--- apply the same exclusions as the charts so the nav counts tie out with
--- what the charts actually plot.
+-- Filter-option counts. stone_type_counts takes p_search so the species list
+-- can show how many hits each species holds for the current query — that is
+-- what makes species-scoped search navigable ("padparadscha" -> Sapphire).
+-- All apply the same exclusions as the charts so counts tie out.
 -- ============================================================
 
-CREATE OR REPLACE FUNCTION stone_type_counts()
+DROP FUNCTION IF EXISTS stone_type_counts();
+
+CREATE OR REPLACE FUNCTION stone_type_counts(p_search text DEFAULT NULL)
 RETURNS TABLE (stone_type text, txn_count bigint)
 LANGUAGE sql STABLE AS $$
+  WITH hits AS (
+    SELECT source_url FROM gemstone_search
+    WHERE p_search IS NOT NULL AND title ILIKE '%' || p_search || '%'
+  )
   SELECT coalesce(g.stone_type, 'Unclassified') AS stone_type, count(*) AS txn_count
   FROM gemstone_sales g
   WHERE g.sale_status = 'Sold'
     AND g.sold_price_usd IS NOT NULL
     AND g.weight_carats IS NOT NULL
     AND NOT EXISTS (SELECT 1 FROM gemstone_excluded_lots e WHERE e.source_url = g.source_url)
+    AND (p_search IS NULL OR EXISTS (SELECT 1 FROM hits h WHERE h.source_url = g.source_url))
   GROUP BY 1
   ORDER BY 2 DESC;
 $$;
 
-GRANT EXECUTE ON FUNCTION stone_type_counts() TO anon;
+GRANT EXECUTE ON FUNCTION stone_type_counts(text) TO anon;
 
 CREATE OR REPLACE FUNCTION origin_counts_for_type(p_stone_type text DEFAULT NULL)
 RETURNS TABLE (origin text, txn_count bigint)
@@ -433,6 +596,21 @@ LANGUAGE sql STABLE AS $$
 $$;
 
 GRANT EXECUTE ON FUNCTION origin_counts_for_type(text) TO anon;
+
+CREATE OR REPLACE FUNCTION treatment_counts_for_type(p_stone_type text DEFAULT NULL)
+RETURNS TABLE (treatment_status text, txn_count bigint)
+LANGUAGE sql STABLE AS $$
+  SELECT g.treatment_status, count(*) AS txn_count
+  FROM gemstone_sales g
+  WHERE g.sale_status = 'Sold'
+    AND g.treatment_status IS NOT NULL AND g.treatment_status != ''
+    AND NOT EXISTS (SELECT 1 FROM gemstone_excluded_lots e WHERE e.source_url = g.source_url)
+    AND (p_stone_type IS NULL OR g.stone_type = p_stone_type)
+  GROUP BY 1
+  ORDER BY 2 DESC;
+$$;
+
+GRANT EXECUTE ON FUNCTION treatment_counts_for_type(text) TO anon;
 
 DROP FUNCTION IF EXISTS color_counts_for_type(text);
 

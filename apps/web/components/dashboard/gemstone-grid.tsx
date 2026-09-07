@@ -29,7 +29,7 @@ function sourceDomain(url: string): string {
 }
 
 export function GemstoneGrid() {
-  const { stoneType, origin, caratRange, priceRange, certifiedOnly } = useFilters();
+  const { stoneType, origin, treatment, search, caratRange, priceRange, certifiedOnly } = useFilters();
   const [page, setPage] = useState(0);
 
   // Any filter change should snap back to page 0 — staying on page 12 of a
@@ -37,7 +37,7 @@ export function GemstoneGrid() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- resetting local pagination in response to external filter state changing
     setPage(0);
-  }, [stoneType, origin, caratRange, priceRange, certifiedOnly]);
+  }, [stoneType, origin, treatment, search, caratRange, priceRange, certifiedOnly]);
 
   const {
     data: result,
@@ -45,8 +45,8 @@ export function GemstoneGrid() {
     error,
     retry,
   } = useAsyncData(
-    () => getSalesPage({ stoneType, origin, caratRange, priceRange, certifiedOnly }, page),
-    [stoneType, origin, caratRange, priceRange, certifiedOnly, page]
+    () => getSalesPage({ stoneType, origin, treatment, search, caratRange, priceRange, certifiedOnly }, page),
+    [stoneType, origin, treatment, search, caratRange, priceRange, certifiedOnly, page]
   );
   const listings = result?.rows ?? [];
   const totalCount = result?.totalCount ?? 0;

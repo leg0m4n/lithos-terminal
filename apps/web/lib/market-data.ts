@@ -92,8 +92,10 @@ function toGemstoneSale(row: GemstoneSaleRow): GemstoneSale | null {
 }
 
 export interface SaleFilters {
-  stoneType: string; // "all" | specific stone_type value
+  stoneType: string; // specific stone_type value ("all" no longer selectable)
   origin: string; // "all" | specific origin name
+  treatment: string; // "all" | specific treatment_status value
+  search: string; // free-text over listing titles; "" = no search
   caratRange: [number, number];
   priceRange: [number, number];
   certifiedOnly: boolean;
@@ -108,6 +110,8 @@ function toRpcParams(filters: SaleFilters) {
   return {
     p_stone_type: filters.stoneType === "all" ? null : filters.stoneType,
     p_origin: filters.origin === "all" ? null : filters.origin,
+    p_treatment: filters.treatment === "all" ? null : filters.treatment,
+    p_search: filters.search.trim() === "" ? null : filters.search.trim(),
     p_min_carat: filters.caratRange[0] > 0 ? filters.caratRange[0] : null,
     p_max_carat: filters.caratRange[1] < CARAT_MAX ? filters.caratRange[1] : null,
     p_min_price: filters.priceRange[0] > 0 ? filters.priceRange[0] : null,
@@ -237,8 +241,10 @@ interface StoneTypeCountRow {
 
 // Powers the left-nav stone-type switcher — a single SQL GROUP BY instead of
 // paging the whole stone_type column into JS and counting client-side.
-export async function getStoneTypeOptions(): Promise<StoneTypeOption[]> {
-  const { data, error } = await supabase.rpc("stone_type_counts");
+export async function getStoneTypeOptions(search = ""): Promise<StoneTypeOption[]> {
+  const { data, error } = await supabase.rpc("stone_type_counts", {
+    p_search: search.trim() === "" ? null : search.trim(),
+  });
   if (error) throw new Error(`stone_type_counts failed: ${error.message}`);
 
   return (data as StoneTypeCountRow[])
@@ -269,3 +275,78 @@ export async function getOriginOptionsForType(stoneType: string): Promise<string
   return (data as OriginCountRow[]).map((row) => row.origin);
 }
 
+
+interface TreatmentCountRow {
+  treatment_status: string;
+  txn_count: number;
+}
+
+// Treatment values scoped to the selected species. Caveat worth repeating
+// wherever this is surfaced: ~78% of rows say "No Treatment", which in gem
+// listings is usually an unstated default rather than a verified claim.
+export async function getTreatmentOptionsForType(stoneType: string): Promise<string[]> {
+  const { data, error } = await supabase.rpc("treatment_counts_for_type", {
+    p_stone_type: stoneType === "all" ? null : stoneType,
+  });
+  if (error) throw new Error(`treatment_counts_for_type failed: ${error.message}`);
+  return (data as TreatmentCountRow[]).map((row) => row.treatment_status);
+}
+
+export interface PriceBin {
+  binIndex: number;
+  binLow: number;
+  binHigh: number;
+  saleCount: number;
+}
+
+export interface CompsDistribution {
+  bins: PriceBin[];
+  totalCount: number;
+  p25: number;
+  median: number;
+  p75: number;
+  minPrice: number;
+  maxPrice: number;
+  medianPricePerCarat: number;
+}
+
+interface PriceBinRow {
+  bin_index: number;
+  bin_low: number | string;
+  bin_high: number | string;
+  sale_count: number;
+  total_count: number;
+  p25: number | string;
+  p50: number | string;
+  p75: number | string;
+  min_price: number | string;
+  max_price: number | string;
+  median_price_per_carat: number | string;
+}
+
+// Powers the comparable-sales panel. Summary stats ride along on every bin
+// row (see the SQL) so the whole panel is a single round trip.
+export async function getPriceDistribution(filters: SaleFilters): Promise<CompsDistribution | null> {
+  const { data, error } = await supabase.rpc("price_distribution", toRpcParams(filters));
+  if (error) throw new Error(`price_distribution failed: ${error.message}`);
+
+  const rows = data as PriceBinRow[];
+  if (rows.length === 0) return null;
+  const first = rows[0];
+
+  return {
+    bins: rows.map((r) => ({
+      binIndex: r.bin_index,
+      binLow: Number(r.bin_low),
+      binHigh: Number(r.bin_high),
+      saleCount: r.sale_count,
+    })),
+    totalCount: first.total_count,
+    p25: Number(first.p25),
+    median: Number(first.p50),
+    p75: Number(first.p75),
+    minPrice: Number(first.min_price),
+    maxPrice: Number(first.max_price),
+    medianPricePerCarat: Number(first.median_price_per_carat),
+  };
+}

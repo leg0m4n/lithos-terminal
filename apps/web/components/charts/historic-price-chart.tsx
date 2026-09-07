@@ -50,7 +50,7 @@ const priceFormatter = new Intl.NumberFormat("en-US", {
 const monthFormatter = new Intl.DateTimeFormat("en-US", { year: "numeric", month: "short" });
 
 export function HistoricPriceChart() {
-  const { stoneType, origin, caratRange, priceRange, certifiedOnly } = useFilters();
+  const { stoneType, origin, treatment, search, caratRange, priceRange, certifiedOnly } = useFilters();
   const [scaleType, setScaleType] = useState<ScaleType>("linear");
 
   const {
@@ -59,8 +59,8 @@ export function HistoricPriceChart() {
     error,
     retry,
   } = useAsyncData(
-    () => getHistoricPriceTrend({ stoneType, origin, caratRange, priceRange, certifiedOnly }),
-    [stoneType, origin, caratRange, priceRange, certifiedOnly]
+    () => getHistoricPriceTrend({ stoneType, origin, treatment, search, caratRange, priceRange, certifiedOnly }),
+    [stoneType, origin, treatment, search, caratRange, priceRange, certifiedOnly]
   );
   // Stable reference when there's no data yet — `?? []` alone would mint a
   // new array every render and defeat the useMemo below.
