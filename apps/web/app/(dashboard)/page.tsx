@@ -2,6 +2,7 @@ import Link from "next/link";
 import { ArrowRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { ActiveFiltersBar } from "@/components/dashboard/active-filters-bar";
+import { DatabaseTotals } from "@/components/dashboard/database-totals";
 import { HistoricPriceChart } from "@/components/charts/historic-price-chart";
 import { MarketActivityChart } from "@/components/charts/market-activity-chart";
 import { TopSalesLeaderboard } from "@/components/dashboard/top-sales-leaderboard";
@@ -34,6 +35,10 @@ export default function DashboardPage() {
           Look up comparable sales for a specific stone
           <ArrowRight className="size-4" />
         </Link>
+
+        {/* Sits above ActiveFiltersBar, not inside it — these totals are the
+            one thing on the page the filters don't touch. */}
+        <DatabaseTotals />
 
         <ActiveFiltersBar />
       </header>

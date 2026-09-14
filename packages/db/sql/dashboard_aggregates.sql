@@ -290,6 +290,20 @@ LANGUAGE sql STABLE AS $$
 $$;
 GRANT EXECUTE ON FUNCTION historic_price_trend(text,text,text,text,numeric,numeric,numeric,numeric,boolean) TO anon;
 
+-- Returns BOTH measures of volume per bucket: deal count and gross USD
+-- turnover. They are not interchangeable — this market's deal flow is
+-- dominated by sub-$100 stones, so a month can set a record for number of
+-- lots sold while gross dollars fall (one $50k sapphire outweighs a
+-- thousand $40 lots). Both come from the same GROUP BY, so the dashboard
+-- gets the dollar measure without a second round trip.
+--
+-- Note this DOES cost heap access: sold_price_usd is not in idx_ga_type_time,
+-- so the plan is a bitmap heap scan rather than the index-only scan the
+-- count-only version could use. Measured on the Sapphire filter (16,784
+-- rows): 680 heap blocks, 20ms warm — fine, because the heap being read
+-- here is narrow gemstone_analytics, not the wide JSONB gemstone_sales that
+-- caused every disaster documented at the top of this file. Left un-indexed
+-- deliberately; revisit only if this table stops being narrow.
 DROP FUNCTION IF EXISTS market_activity(text,text,text,text,numeric,numeric,numeric,numeric,boolean,text);
 CREATE OR REPLACE FUNCTION market_activity(
   p_stone_type text DEFAULT NULL, p_origin text DEFAULT NULL,
@@ -298,11 +312,12 @@ CREATE OR REPLACE FUNCTION market_activity(
   p_min_price numeric DEFAULT NULL, p_max_price numeric DEFAULT NULL,
   p_certified_only boolean DEFAULT false, p_bucket text DEFAULT 'month'
 )
-RETURNS TABLE (bucket timestamptz, sale_count bigint)
+RETURNS TABLE (bucket timestamptz, sale_count bigint, gross_usd numeric)
 LANGUAGE sql STABLE AS $$
   SELECT date_trunc(CASE WHEN p_bucket IN ('day','week','month') THEN p_bucket ELSE 'month' END,
                     a.auction_starts) AS bucket,
-         count(*) AS sale_count
+         count(*) AS sale_count,
+         sum(a.sold_price_usd) AS gross_usd
   FROM gemstone_analytics a
   WHERE (p_stone_type IS NULL OR a.stone_type = p_stone_type)
     AND (p_origin IS NULL OR a.origin = p_origin)
@@ -448,6 +463,27 @@ LANGUAGE sql STABLE AS $$
   GROUP BY 1 ORDER BY 2 DESC;
 $$;
 GRANT EXECUTE ON FUNCTION stone_type_counts(text) TO anon;
+
+-- Whole-dataset totals — deliberately takes NO filter parameters. This is
+-- the "how much market is in here at all" number, so it must not move when
+-- the sidebar moves; every other RPC in this file is filter-scoped.
+--
+-- Scope is gemstone_analytics, i.e. usable SOLD lots only. That is smaller
+-- than gemstone_sales (130,067 vs 142,847 at the time of writing) because
+-- unsold/zero-price/zero-weight rows and the junk classes in
+-- gemstone_excluded_lots never enter. Counting the raw table instead would
+-- read the wide JSONB heap for a vanity number — and would report lots that
+-- the charts intentionally don't price. Surface it labelled as the tracked
+-- sold set, not as "rows scraped".
+CREATE OR REPLACE FUNCTION database_totals()
+RETURNS TABLE (total_sales bigint, gross_usd numeric,
+               oldest timestamptz, newest timestamptz)
+LANGUAGE sql STABLE AS $$
+  SELECT count(*), sum(a.sold_price_usd),
+         min(a.auction_starts), max(a.auction_starts)
+  FROM gemstone_analytics a;
+$$;
+GRANT EXECUTE ON FUNCTION database_totals() TO anon;
 
 CREATE OR REPLACE FUNCTION origin_counts_for_type(p_stone_type text DEFAULT NULL)
 RETURNS TABLE (origin text, txn_count bigint)

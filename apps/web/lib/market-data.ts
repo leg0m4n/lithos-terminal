@@ -155,18 +155,27 @@ export async function getHistoricPriceTrend(filters: SaleFilters): Promise<Trend
 
 export type TimeBucket = "month" | "day";
 
+// Two different meanings of "volume", both per bucket. Deal count answers
+// "how busy was the market"; gross USD answers "how much money moved". They
+// diverge here more than in most markets because deal flow is dominated by
+// sub-$100 lots — the mean sale across the whole dataset is ~$46 — so a
+// single five-figure stone can outweigh a thousand cheap ones and a
+// record-count month can be a weak dollar month.
 export interface ActivityBucket {
   bucket: string; // ISO timestamp, start of the bucket
   saleCount: number;
+  grossUsd: number;
 }
 
 interface ActivityBucketRow {
   bucket: string;
   sale_count: number;
+  gross_usd: number | string | null;
 }
 
-// Sale counts per time bucket. Like the trend, this is a DB-side GROUP BY,
-// so the payload is one row per bucket regardless of table size.
+// Sale counts and gross turnover per time bucket. Like the trend, this is a
+// DB-side GROUP BY, so the payload is one row per bucket regardless of
+// table size.
 export async function getMarketActivity(
   filters: SaleFilters,
   bucket: TimeBucket
@@ -180,7 +189,43 @@ export async function getMarketActivity(
   return (data as ActivityBucketRow[]).map((row) => ({
     bucket: row.bucket,
     saleCount: row.sale_count,
+    // numeric comes back as a string over the wire — Number() it here
+    // rather than letting "12345.67" reach a chart axis as a string.
+    grossUsd: row.gross_usd == null ? 0 : Number(row.gross_usd),
   }));
+}
+
+export interface DatabaseTotals {
+  totalSales: number;
+  grossUsd: number;
+  oldest: string | null;
+  newest: string | null;
+}
+
+interface DatabaseTotalsRow {
+  total_sales: number;
+  gross_usd: number | string | null;
+  oldest: string | null;
+  newest: string | null;
+}
+
+// Whole-dataset scale, ignoring every sidebar filter on purpose — it's the
+// "what's in here at all" number, so it must not move when the filters do.
+// Counts usable sold lots (what the charts actually price), which is fewer
+// than rows scraped; label it that way wherever it's shown.
+export async function getDatabaseTotals(): Promise<DatabaseTotals | null> {
+  const { data, error } = await supabase.rpc("database_totals");
+  if (error) throw new Error(`database_totals failed: ${error.message}`);
+
+  const row = (data as DatabaseTotalsRow[])[0];
+  if (!row) return null;
+
+  return {
+    totalSales: row.total_sales,
+    grossUsd: row.gross_usd == null ? 0 : Number(row.gross_usd),
+    oldest: row.oldest,
+    newest: row.newest,
+  };
 }
 
 const OUTLIER_LIMIT = 20;
